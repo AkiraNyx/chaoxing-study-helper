@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# 构建产物
+build/
+dist/*.spec
+
+# 本地环境 / 密钥
+.env
+.env.*
+config.json
+cookie*.txt
+*Cookie*.txt
+
+# 临时抓取
+_stu_page.html
+_studentcourse.html
+_work_*.html
+*.log

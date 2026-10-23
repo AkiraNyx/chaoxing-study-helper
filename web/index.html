@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#f0eee6">
+<title>学习通刷课助手</title>
+<script>
+(function () {
+  try {
+    var pref = localStorage.getItem("cx-theme") || "auto";
+    var dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    document.documentElement.dataset.theme = pref === "auto" ? (dark ? "dark" : "light") : pref;
+  } catch (e) {}
+})();
+</script>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="bg" aria-hidden="true">
+  <span class="orb orb-1"></span>
+  <span class="orb orb-2"></span>
+  <span class="orb orb-3"></span>
+  <span class="bg-lines"></span>
+</div>
+
+<header class="topbar">
+  <div class="brand pywebview-drag-region">
+    <span class="brand-mark" id="brandMark">
+      <i data-lucide="graduation-cap" aria-hidden="true"></i>
+    </span>
+    <span class="brand-text">
+      <strong>学习通刷课</strong>
+      <small>Chaoxing Study Helper</small>
+    </span>
+  </div>
+
+  <div class="topbar-drag pywebview-drag-region" aria-hidden="true"></div>
+
+  <div class="top-actions">
+    <span class="user-chip" id="userChip" hidden>
+      <span class="avatar" id="userAvatar">?</span>
+      <span class="user-name" id="userName">已登录</span>
+    </span>
+    <button class="btn ghost" id="diagnoseBtn" hidden>
+      <i data-lucide="activity" aria-hidden="true"></i>
+      诊断
+    </button>
+    <button class="btn ghost" id="refreshBtn" hidden>
+      <i data-lucide="refresh-cw" aria-hidden="true"></i>
+      刷新课程
+    </button>
+    <button class="btn ghost icon-only" id="logoutBtn" hidden title="退出登录" aria-label="退出登录">
+      <i data-lucide="log-out" aria-hidden="true"></i>
+    </button>
+    <button class="btn ghost icon-only" id="themeBtn" title="外观：跟随系统" aria-label="切换外观">
+      <i data-lucide="monitor" aria-hidden="true"></i>
+    </button>
+    <div class="window-controls" id="windowControls" hidden>
+      <button class="win-btn" id="winMin" type="button" aria-label="最小化" title="最小化">
+        <i data-lucide="minus" aria-hidden="true"></i>
+      </button>
+      <button class="win-btn" id="winMax" type="button" aria-label="最大化" title="最大化">
+        <i data-lucide="square" aria-hidden="true"></i>
+      </button>
+      <button class="win-btn close" id="winClose" type="button" aria-label="关闭" title="关闭">
+        <i data-lucide="x" aria-hidden="true"></i>
+      </button>
+    </div>
+  </div>
+</header>
+
+<div class="scroll-area" id="scrollArea">
+<main class="app">
+  <section class="login" id="loginView">
+    <div class="login-card" id="loginCard">
+      <div class="login-glow" aria-hidden="true"></div>
+      <p class="eyebrow">WELCOME BACK</p>
+      <h1>登录学习通</h1>
+      <p class="muted login-sub">登录后自动列出本学期课程，勾选即可开始。</p>
+
+      <div class="segmented" id="modeSwitch">
+        <span class="seg-pill" id="segPill"></span>
+        <button class="seg active" type="button" data-mode="password">账号密码</button>
+        <button class="seg" type="button" data-mode="qrcode">扫码登录</button>
+        <button class="seg" type="button" data-mode="cookie">Cookie</button>
+      </div>
+
+      <form id="loginForm" novalidate>
+        <label class="field" data-mode="password">
+          <span>手机号 / 账号</span>
+          <input id="username" name="username" autocomplete="username" placeholder="请输入学习通账号" spellcheck="false">
+        </label>
+        <label class="field" data-mode="password">
+          <span>密码</span>
+          <span class="input-wrap">
+            <input id="password" name="password" type="password" autocomplete="current-password" placeholder="请输入密码">
+            <button class="eye" id="togglePass" type="button" title="显示密码" aria-label="显示密码">
+              <i data-lucide="eye" aria-hidden="true"></i>
+            </button>
+          </span>
+        </label>
+        <label class="field" data-mode="cookie" hidden>
+          <span>Cookie</span>
+          <textarea id="cookieInput" rows="5" placeholder="粘贴浏览器里的 Cookie 请求头" spellcheck="false"></textarea>
+        </label>
+        <p class="hint" data-mode="cookie" hidden>i.chaoxing.com 登录后按 F12 → 网络 → 任一请求 → 复制 Cookie 整行。</p>
+        <div class="qr-panel" data-mode="qrcode" hidden>
+          <div class="qr-frame">
+            <img id="qrImage" alt="学习通登录二维码">
+          </div>
+          <p class="qr-status" id="qrStatus">正在获取二维码…</p>
+          <button class="btn tiny ghost" id="qrRefresh" type="button">刷新二维码</button>
+        </div>
+        <button class="btn primary block" id="loginBtn" type="submit">
+          <span class="btn-label">登 录</span>
+          <span class="btn-spinner" aria-hidden="true"></span>
+        </button>
+      </form>
+      <p class="foot-note">扫码登录需在学习通 App 内确认；账号密码会先 AES 加密再发送；遇到验证码可改用扫码或 Cookie。</p>
+    </div>
+  </section>
+
+  <section id="appView" hidden>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="sidebar-label">工作台</div>
+        <nav class="side-nav">
+          <button class="side-item primary active" data-view="brush"><i data-lucide="play-circle" aria-hidden="true"></i><span>刷课</span></button>
+          <button class="side-item primary" data-view="quiz"><i data-lucide="list-checks" aria-hidden="true"></i><span>做题</span></button>
+          <div class="side-sep"></div>
+          <button class="side-item" data-view="ai"><i data-lucide="sparkles" aria-hidden="true"></i><span>AI 接口</span></button>
+          <button class="side-item" data-view="settings"><i data-lucide="settings" aria-hidden="true"></i><span>设置</span></button>
+          <button class="side-item" data-view="about"><i data-lucide="info" aria-hidden="true"></i><span>关于</span></button>
+        </nav>
+        <div class="side-foot">本地运行 · v1.0</div>
+      </aside>
+      <div class="app-main">
+        <section class="view" id="view-brush">
+    <div class="stats">
+      <div class="stat"><span>课程</span><b id="statCourses">0</b></div>
+      <div class="stat"><span>已选</span><b id="statSelected">0</b></div>
+      <div class="stat"><span>完成</span><b id="statDone" class="ok">0</b></div>
+      <div class="stat"><span>失败</span><b id="statFailed" class="bad">0</b></div>
+    </div>
+
+    <div class="layout">
+      <section class="panel courses-panel">
+        <div class="panel-head">
+          <div>
+            <h2>我的课程</h2>
+            <p class="muted" id="coursesHint">点击课程卡片勾选，右侧设置刷课参数</p>
+          </div>
+          <div class="head-tools">
+            <label class="search">
+              <i data-lucide="search" aria-hidden="true"></i>
+              <input id="searchInput" placeholder="筛选课程" spellcheck="false">
+            </label>
+            <button class="btn tiny ghost" id="selectAllBtn">全选</button>
+            <button class="btn tiny ghost" id="selectNoneBtn">清空</button>
+          </div>
+        </div>
+        <div class="course-grid" id="courseGrid"></div>
+        <div class="empty" id="courseEmpty" hidden>
+          <i data-lucide="inbox" aria-hidden="true"></i>
+          <span>还没有课程</span>
+          <small>点右上角「刷新课程」，或检查登录是否失效。</small>
+        </div>
+      </section>
+
+      <aside class="panel control-panel">
+        <h2>刷课设置</h2>
+        <div class="speed">
+          <div class="speed-head"><span>倍速</span><b id="speedValue">1.5×</b></div>
+          <input type="range" id="speed" min="1" max="3" step="0.1" value="1.5" aria-label="倍速">
+          <div class="speed-marks"><span>1×</span><span>2×</span><span>3×</span></div>
+        </div>
+
+        <div class="switches">
+          <label class="switch"><input type="checkbox" id="optSkipFinished" checked><span class="track"></span><span class="switch-text">跳过已完成章节</span></label>
+          <label class="switch"><input type="checkbox" id="optDocument" checked><span class="track"></span><span class="switch-text">处理文档任务点</span></label>
+          <label class="switch"><input type="checkbox" id="optRead" checked><span class="track"></span><span class="switch-text">处理阅读任务点</span></label>
+          <label class="switch" title="开始时先把进度直接报满；被服务端拒绝会自动转回正常节奏，可能触发风控"><input type="checkbox" id="optInstant" checked><span class="track"></span><span class="switch-text">极速模式（先试报满）</span></label>
+        </div>
+
+        <div class="progress-card">
+          <div class="progress-top"><span id="phaseLabel">待命</span><b id="progressPct">0.00%</b></div>
+          <div class="bar"><i id="progressBar"></i></div>
+          <p class="current" id="currentTask">选择课程后点击「开始刷课」</p>
+        </div>
+
+        <button class="btn primary block start-btn" id="startBtn">
+          <i data-lucide="play" aria-hidden="true"></i>
+          <span id="startLabel">开始刷课</span>
+        </button>
+        <button class="btn danger block" id="stopBtn" hidden>停止</button>
+        <p class="tip">倍速越高上报节奏越快；遇到风控或进度不涨，请下调到 1.5× 并重试。</p>
+      </aside>
+    </div>
+
+    <section class="panel log-panel">
+      <div class="panel-head">
+        <div class="log-head">
+          <span class="run-dot" id="runDot"></span>
+          <h2>运行日志</h2>
+          <span class="log-status" id="logStatus">空闲</span>
+        </div>
+        <div class="head-tools">
+          <label class="mini"><input type="checkbox" id="autoScroll" checked><span>自动滚动</span></label>
+          <button class="btn tiny ghost" id="clearLogBtn">清空</button>
+        </div>
+      </div>
+      <div class="console" id="console">
+        <div class="console-empty" id="consoleEmpty">暂无日志，开始刷课后这里会实时输出。</div>
+      </div>
+    </section>
+        </section>
+
+        <section class="view" id="view-quiz" hidden>
+          <div class="layout">
+            <div class="quiz-main">
+              <div class="panel">
+                <div class="panel-head">
+                  <div>
+                    <h2>章节测验</h2>
+                    <p class="muted">点「作答」开始；可以手动答题，也可以让 AI 填当前题</p>
+                  </div>
+                  <button class="btn ghost" id="quizRefresh" type="button">刷新测验</button>
+                </div>
+                <div class="quiz-scan" id="quizScan" hidden>
+                  <div class="progress-top"><span>扫描题目</span><b id="quizScanPct">0.00%</b></div>
+                  <div class="bar"><i id="quizScanBar"></i></div>
+                  <p class="current" id="quizScanCurrent"></p>
+                </div>
+                <div class="quiz-tools">
+                  <label class="search quiz-search">
+                    <i data-lucide="search" aria-hidden="true"></i>
+                    <input id="quizSearch" placeholder="搜索测验 / 章节" autocomplete="off" spellcheck="false">
+                  </label>
+                  <div class="quiz-filter" id="quizFilter">
+                    <button type="button" class="active" data-filter="all">全部</button>
+                    <button type="button" data-filter="pending">未完成</button>
+                    <button type="button" data-filter="done">已完成</button>
+                  </div>
+                </div>
+                <div class="quiz-list" id="quizList">
+                  <div class="chapter-note">还没有读取测验，点右上角「刷新测验」。</div>
+                </div>
+                <div class="quiz-active" id="quizActive" hidden>
+                  <span class="quiz-active-name" id="quizActiveName"></span>
+                  <span class="pill" id="quizActiveState">作答中</span>
+                  <button class="btn ghost tiny" id="quizBack" type="button">返回列表</button>
+                </div>
+              </div>
+              <div class="panel quiz-runner" id="quizRunner" hidden>
+                <div class="quiz-dialog-head">
+                  <div>
+                    <h3 id="quizTitle">章节测验</h3>
+                    <p class="muted" id="quizMeta"></p>
+                  </div>
+                  <button class="win-btn" id="quizClose" type="button" aria-label="收起"><i data-lucide="x" aria-hidden="true"></i></button>
+                </div>
+                <div class="quiz-dialog-progress">
+                  <span id="quizIndex">1 / 1</span>
+                  <div class="bar"><i id="quizModalBar"></i></div>
+                  <div class="quiz-ring" id="quizRing"><span id="quizRingText">0%</span></div>
+                </div>
+                <div class="quiz-question" id="quizQuestion"></div>
+                <div class="quiz-dialog-actions">
+                  <button class="btn ghost" id="quizPrev" type="button">上一题</button>
+                  <button class="btn ghost" id="quizAi" type="button">AI 填这题</button>
+                  <button class="btn ghost" id="quizNext" type="button">下一题</button>
+                  <button class="btn primary" id="quizSubmit" type="button">提交</button>
+                </div>
+              </div>
+            </div>
+            <aside class="panel quiz-side">
+              <h2>作答进度</h2>
+              <div class="progress-card">
+                <div class="progress-top"><span id="quizPhase">待命</span><b id="quizPct">0.00%</b></div>
+                <div class="bar"><i id="quizBar"></i></div>
+                <p class="current" id="quizCurrent">选择一道测验开始</p>
+              </div>
+              <div class="console quiz-console" id="quizConsole">
+                <div class="console-empty" id="quizConsoleEmpty">暂无日志，开始作答后这里会实时输出。</div>
+              </div>
+            </aside>
+          </div>
+        </section>
+
+        <section class="view" id="view-ai" hidden>
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>AI 接口设置</h2>
+                <p class="muted">用于章节测验自动作答，兼容 OpenAI 格式；DeepSeek 直接填 Key 即可</p>
+              </div>
+            </div>
+            <div class="form-rows">
+              <label class="field"><span>接口地址</span><input id="aiBase" placeholder="https://api.deepseek.com" spellcheck="false"></label>
+              <label class="field"><span>API Key</span><input id="aiKey" type="password" placeholder="sk-..." spellcheck="false" autocomplete="off"></label>
+              <label class="field"><span>模型</span>
+                <span class="combo" id="aiModelCombo">
+                  <input id="aiModel" placeholder="模型 ID，可直接手输" spellcheck="false" autocomplete="off">
+                  <button class="combo-toggle" id="aiModelToggle" type="button" aria-label="选择模型">
+                    <i data-lucide="chevron-down" aria-hidden="true"></i>
+                  </button>
+                  <div class="combo-menu" id="aiModelMenu" hidden></div>
+                </span>
+              </label>
+              <div class="field">
+                <span>推理等级</span>
+                <div class="effort-choices" id="aiEffort">
+                  <button type="button" class="effort-btn active" data-effort="">默认</button>
+                  <button type="button" class="effort-btn" data-effort="low">低</button>
+                  <button type="button" class="effort-btn" data-effort="medium">中</button>
+                  <button type="button" class="effort-btn" data-effort="high">高</button>
+                </div>
+              </div>
+            </div>
+            <div class="row-actions">
+              <button class="btn primary" id="aiSaveBtn" type="button">保存</button>
+              <button class="btn ghost" id="aiTestBtn" type="button">测试连接</button>
+              <span class="muted" id="aiStatus"></span>
+            </div>
+            <p class="tip">Key 只保存在本机配置目录。章节测验目前会排在所有视频/文档之后统一处理。</p>
+          </div>
+        </section>
+
+        <section class="view" id="view-settings" hidden>
+          <div class="panel">
+            <h2>设置</h2>
+            <div class="setting-row">
+              <div><strong>外观</strong><p class="muted">默认跟随系统，也可以固定浅色或深色。</p></div>
+              <div class="theme-choices">
+                <button class="btn tiny ghost" data-theme-choice="auto">跟随系统</button>
+                <button class="btn tiny ghost" data-theme-choice="light">浅色</button>
+                <button class="btn tiny ghost" data-theme-choice="dark">深色</button>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div><strong>数据位置</strong><p class="muted">主题和开关存在浏览器本地；AI 配置存在本机 <code>%APPDATA%\学习通刷课\config.json</code>。</p></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="view-about" hidden>
+          <div class="panel about">
+            <h2>学习通刷课助手</h2>
+            <p class="muted">本地运行的课程进度工具：列出课程、自动完成视频/文档/阅读任务点，章节测验排在最后处理。</p>
+            <ul class="about-list">
+              <li>界面：Anthropic 风格 · anime.js v4 · Lucide</li>
+              <li>桌面：Microsoft Edge WebView2 · 单文件 exe</li>
+              <li>字体：Anthropic Sans / Serif / Mono · MiSans</li>
+              <li>作者：AkiraNyx</li>
+              <li>协议：GNU AGPL-3.0</li>
+            </ul>
+            <p class="tip">仅供个人学习进度整理，请遵守学校规定与平台协议。</p>
+          </div>
+        </section>
+      </div>
+    </div>
+  </section>
+</main>
+</div>
+
+<div class="modal" id="chapterModal" hidden>
+  <div class="modal-card" id="modalCard">
+    <header>
+      <div>
+        <h3 id="chapterTitle">课程章节</h3>
+        <p class="muted" id="chapterSub">正在读取…</p>
+      </div>
+      <button class="icon-btn" id="closeModal" aria-label="关闭">
+        <i data-lucide="x" aria-hidden="true"></i>
+      </button>
+    </header>
+    <div class="chapter-list" id="chapterList"></div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="vendor/lucide.min.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
