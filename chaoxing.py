@@ -197,6 +197,7 @@ class Quiz:
     form: dict
     questions: list[Question]
     encrypted: bool = False
+    decoded: bool = False
     completed: bool = False
     score: float | None = None
     course_id: str = ""
@@ -394,9 +395,10 @@ def _job_from_card(card: dict) -> Optional[Job]:
     )
 
 
-def parse_quiz_html(html: str) -> tuple[dict, list[Question]]:
+def parse_quiz_html(html: str, decoder=None) -> tuple[dict, list[Question]]:
     root = parse_html(html)
-    decoder = font_decoder.make_decoder(html)
+    if decoder is None:
+        decoder = font_decoder.make_decoder(html)
     form_node = root.find("form") or root
     form: dict = {}
     for item in form_node.find_all("input"):
@@ -871,7 +873,8 @@ class Client:
             raise ChaoxingError(f"测验页请求失败（HTTP {code}）")
         if "教师未创建完成该测验" in html:
             raise ChaoxingError("教师未创建完成该测验")
-        form, questions = parse_quiz_html(html)
+        decoder = font_decoder.make_decoder(html)
+        form, questions = parse_quiz_html(html, decoder)
         if not questions:
             raise ChaoxingError("没有解析到题目，页面结构可能已更新")
         scores = re.findall(r'class="scoreNum"[^>]*>\s*([0-9.]+)', html)
@@ -879,6 +882,7 @@ class Client:
         return Quiz(
             form, questions,
             encrypted=font_decoder.has_encryption(html),
+            decoded=bool(decoder),
             completed="testTit_status_complete" in html,
             score=score,
             course_id=course.course_id,

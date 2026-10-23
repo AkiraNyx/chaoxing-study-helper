@@ -515,7 +515,10 @@ def _quiz_worker(client: chaoxing.Client, course: chaoxing.Course, point_id: str
         log("info", "打开测验页…")
         quiz = client.get_quiz(course, job, info)
         if quiz.encrypted:
-            log("info", "检测到字体加密，已按字形映射解码")
+            if quiz.decoded:
+                log("info", "检测到字体加密，已按字形映射解码")
+            else:
+                log("warn", "检测到字体加密，但字体解码失败，题目可能仍是乱码")
         log("ok", f"读取到 {len(quiz.questions)} 道题")
         state.set_quiz_progress(22, "AI 作答中")
         answers: dict[str, str] = {}

@@ -12,6 +12,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 from io import BytesIO
 
 try:
@@ -71,7 +72,7 @@ def make_decoder(html: str):
         raw = base64.b64decode(re.sub(r"\s+", "", encoded.group(1)))
         font = TTFont(BytesIO(raw), lazy=False)
         glyph_map = {}
-        for name in font["glyphOrder"]:
+        for name in font.getGlyphOrder():
             if name.startswith("uni"):
                 value = _hash_glyph(font["glyf"].glyphs[name])
                 if value:
@@ -100,6 +101,14 @@ def make_decoder(html: str):
                     result.append(original)
                     continue
             result.append(char)
-        return "".join(result)
+        text = "".join(result)
+        fixed = []
+        for char in text:
+            code = ord(char)
+            if 0x2E80 <= code <= 0x2FDF or 0xF900 <= code <= 0xFAFF:
+                fixed.append(unicodedata.normalize("NFKC", char))
+            else:
+                fixed.append(char)
+        return "".join(fixed)
 
     return decode
