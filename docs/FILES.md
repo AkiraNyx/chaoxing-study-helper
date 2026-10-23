@@ -26,10 +26,10 @@
 | 路径 | 作用 |
 | --- | --- |
 | `web/index.html` | 单页结构：登录、刷课、做题、AI 接口、设置、关于 |
-| `web/style.css` | Anthropic 风格浅色/深色主题、组件、动效 |
+| `web/style.css` | 暖纸色浅色/深色主题、组件、动效 |
 | `web/app.js` | 页面状态、API 调用、进度/日志、答题卡、anime.js 动效 |
 | `web/vendor/` | anime.js v4、Lucide 图标 |
-| `web/fonts/` | Anthropic Sans/Serif/Mono + MiSans 子集 |
+| `web/fonts/` | 内置英文 Sans/Serif/Mono + MiSans 子集 |
 | `web/favicon.svg` | 页面图标 |
 
 ## 构建与资源

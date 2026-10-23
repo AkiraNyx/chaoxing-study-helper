@@ -49,7 +49,7 @@
 - 没有黑框终端，没有原生标题栏
 - 所有请求都在本机发出，界面里能看到每一步日志
 
-如果它看起来像 Anthropic 的网页，那不是巧合；如果它偶尔犯蠢，那也不是巧合，是学习通又改页面了。
+如果它看起来像某个暖纸色的笔记应用，那只是审美选择；如果它偶尔犯蠢，那也不是巧合，是学习通又改页面了。
 
 ## 能做什么
 
@@ -116,7 +116,7 @@ flowchart LR
 4. 想做题就切到「做题」→「刷新测验」→ 点「作答」
 5. 卡住了就点右上角「诊断」，它会告诉你哪一层断了
 
-> 不想拉整个仓库？直接去 [Releases](https://github.com/AkiraNyx/chaoxing-study-helper/releases) 下载 `chaoxing-study-helper-v1.0.2.exe`。
+> 不想拉整个仓库？直接去 [Releases](https://github.com/AkiraNyx/chaoxing-study-helper/releases) 下载 `chaoxing-study-helper-v1.0.3.exe`。
 
 > 首次启动会解包到临时目录，慢一两秒是正常的。SmartScreen 拦截就点「更多信息 → 仍要运行」。
 
@@ -278,7 +278,7 @@ by the Free Software Foundation, either version 3 of the License, or
 - 如果把它做成网络服务给别人用，也要向使用者提供对应源码
 - 不提供任何担保
 
-第三方资源（anime.js、Lucide、Anthropic / MiSans 字体）仍归各自许可证所有，不在本项目 AGPL 覆盖范围内；再分发时请一并遵守它们的条款。
+第三方资源（anime.js、Lucide 与内置字体）仍归各自许可证所有，不在本项目 AGPL 覆盖范围内；再分发时请一并遵守它们的条款。
 
 ## 最后
 

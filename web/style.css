@@ -1,42 +1,42 @@
 /* ---------------------------------------------------------------- 字体 */
 @font-face {
-  font-family: "Anthropic Sans";
-  src: url("fonts/AnthropicSans-Roman.woff2") format("woff2");
+  font-family: "Paper Sans";
+  src: url("fonts/PaperSans-Roman.woff2") format("woff2");
   font-weight: 300 800;
   font-style: normal;
   font-display: swap;
 }
 @font-face {
-  font-family: "Anthropic Sans";
-  src: url("fonts/AnthropicSans-Italic.woff2") format("woff2");
+  font-family: "Paper Sans";
+  src: url("fonts/PaperSans-Italic.woff2") format("woff2");
   font-weight: 300 800;
   font-style: italic;
   font-display: swap;
 }
 @font-face {
-  font-family: "Anthropic Serif";
-  src: url("fonts/AnthropicSerif-Roman.woff2") format("woff2");
+  font-family: "Paper Serif";
+  src: url("fonts/PaperSerif-Roman.woff2") format("woff2");
   font-weight: 300 800;
   font-style: normal;
   font-display: swap;
 }
 @font-face {
-  font-family: "Anthropic Serif";
-  src: url("fonts/AnthropicSerif-Italic.woff2") format("woff2");
+  font-family: "Paper Serif";
+  src: url("fonts/PaperSerif-Italic.woff2") format("woff2");
   font-weight: 300 800;
   font-style: italic;
   font-display: swap;
 }
 @font-face {
-  font-family: "Anthropic Mono";
-  src: url("fonts/AnthropicMono-Roman.woff2") format("woff2");
+  font-family: "Paper Mono";
+  src: url("fonts/PaperMono-Roman.woff2") format("woff2");
   font-weight: 300 800;
   font-style: normal;
   font-display: swap;
 }
 @font-face {
-  font-family: "Anthropic Mono";
-  src: url("fonts/AnthropicMono-Italic.woff2") format("woff2");
+  font-family: "Paper Mono";
+  src: url("fonts/PaperMono-Italic.woff2") format("woff2");
   font-weight: 300 800;
   font-style: italic;
   font-display: swap;
@@ -81,11 +81,11 @@
   --warn: #a86f14;
   --bad: #a94a44;
   --radius: 14px;
-  --serif: "Anthropic Serif", "Noto Serif SC", "Songti SC", "STSong",
+  --serif: "Paper Serif", "Noto Serif SC", "Songti SC", "STSong",
     Georgia, serif;
-  --sans: "Anthropic Sans", "MiSans", "Noto Sans SC", "Microsoft YaHei UI",
+  --sans: "Paper Sans", "MiSans", "Noto Sans SC", "Microsoft YaHei UI",
     "PingFang SC", "Segoe UI", system-ui, sans-serif;
-  --mono: "Anthropic Mono", "MiSans", "Cascadia Code", "JetBrains Mono",
+  --mono: "Paper Mono", "MiSans", "Cascadia Code", "JetBrains Mono",
     Consolas, "Courier New", monospace;
 }
 
