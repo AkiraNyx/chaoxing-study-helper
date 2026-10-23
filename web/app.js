@@ -855,6 +855,14 @@ function setupDesktop() {
   document.body.classList.add("desktop");
   $("#windowControls").hidden = false;
   renderIcons();
+  document.addEventListener("click", (event) => {
+    const link = event.target.closest("[data-external]");
+    if (!link) return;
+    event.preventDefault();
+    const api = desktopApi();
+    if (api && api.open_external) api.open_external(link.href);
+    else window.open(link.href, "_blank", "noopener");
+  });
 }
 
 function desktopApi() {

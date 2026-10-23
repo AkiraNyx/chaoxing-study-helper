@@ -9,6 +9,7 @@ import ctypes
 import os
 import sys
 import threading
+import webbrowser
 
 import server
 
@@ -38,6 +39,10 @@ class WindowApi:
     def close(self) -> None:
         if self._window:
             self._window.destroy()
+
+    def open_external(self, url: str) -> None:
+        if isinstance(url, str) and url.startswith(("https://", "http://")):
+            webbrowser.open(url)
 
 
 def _alert(message: str) -> None:
