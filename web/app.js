@@ -90,6 +90,7 @@ function setView(name) {
     if (section) section.hidden = view !== name;
   });
   if (name === "quiz" && !state.quizLoaded) loadQuizzes();
+  if (name === "settings") loadAutoLogin();
 }
 
 function renderQuizList(quizzes) {
@@ -662,6 +663,39 @@ async function testAiConfig() {
   }
 }
 
+async function loadAutoLogin() {
+  try {
+    const data = await api("/api/session/saved");
+    $("#autoLoginToggle").checked = Boolean(data.saved);
+    $("#autoLoginState").textContent = data.saved ? "已开启" : "已关闭";
+  } catch {
+    /* 忽略 */
+  }
+}
+
+async function updateAutoLogin(enabled) {
+  try {
+    const data = await api("/api/session/auto", postJson({ enabled }));
+    $("#autoLoginToggle").checked = Boolean(data.saved);
+    $("#autoLoginState").textContent = data.saved ? "已开启" : "已关闭";
+    toast(data.saved ? "已开启自动登录" : "已关闭并清除保存的登录", "ok");
+  } catch (error) {
+    toast(error.message, "error");
+    loadAutoLogin();
+  }
+}
+
+async function clearSavedLogin() {
+  try {
+    await api("/api/session/clear", postJson({}));
+    $("#autoLoginToggle").checked = false;
+    $("#autoLoginState").textContent = "已关闭";
+    toast("已清除保存的登录信息", "ok");
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
 async function updateThemeChoice(choice) {
   state.theme = choice;
   try {
@@ -767,6 +801,8 @@ async function init() {
     }
   } catch {
     animateLoginIn();
+  } finally {
+    $("#bootSplash").classList.add("hidden");
   }
   poll();
 }
@@ -1678,6 +1714,10 @@ function bindUi() {
   $$("[data-theme-choice]").forEach((button) => {
     button.addEventListener("click", () => updateThemeChoice(button.dataset.themeChoice));
   });
+  $("#autoLoginToggle").addEventListener("change", () => {
+    updateAutoLogin($("#autoLoginToggle").checked);
+  });
+  $("#clearLoginBtn").addEventListener("click", clearSavedLogin);
 
   $$(".pywebview-drag-region").forEach((region) => {
     region.addEventListener("dblclick", toggleMaximize);

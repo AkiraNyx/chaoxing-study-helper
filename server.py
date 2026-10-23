@@ -739,6 +739,13 @@ class Handler(BaseHTTPRequestHandler):
                     "name": STATE.client.name if STATE.client else "",
                 })
 
+        if route == "/api/session/saved":
+            return self._json({
+                "ok": True,
+                "saved": bool(session_store.load()),
+                "logged_in": bool(STATE.client and STATE.client.uid),
+            })
+
         if route == "/api/status":
             try:
                 since = int((query.get("since") or ["0"])[0])
@@ -911,6 +918,28 @@ class Handler(BaseHTTPRequestHandler):
     def _api_post(self, parsed) -> None:
         route = parsed.path
         payload = self._read_json()
+
+        if route == "/api/session/auto":
+            enabled = bool(payload.get("enabled"))
+            if enabled:
+                client = self._require_client()
+                saved = _save_login(client)
+                if not saved:
+                    return self._error("保存登录信息失败，请检查磁盘权限", 400)
+                with STATE.lock:
+                    STATE.restore_attempted = False
+            else:
+                session_store.clear()
+                with STATE.lock:
+                    STATE.restore_attempted = True
+                saved = False
+            return self._json({"ok": True, "saved": saved})
+
+        if route == "/api/session/clear":
+            session_store.clear()
+            with STATE.lock:
+                STATE.restore_attempted = True
+            return self._json({"ok": True, "saved": False})
 
         if route == "/api/login":
             mode = payload.get("mode") or "password"

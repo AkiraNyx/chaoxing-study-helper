@@ -18,6 +18,13 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<div class="boot-splash" id="bootSplash">
+  <div class="boot-inner">
+    <span class="boot-mark"></span>
+    <strong>学习通刷课助手</strong>
+    <p>正在恢复登录状态…</p>
+  </div>
+</div>
 <div class="bg" aria-hidden="true">
   <span class="orb orb-1"></span>
   <span class="orb orb-2"></span>
@@ -138,7 +145,7 @@
           <button class="side-item" data-view="settings"><i data-lucide="settings" aria-hidden="true"></i><span>设置</span></button>
           <button class="side-item" data-view="about"><i data-lucide="info" aria-hidden="true"></i><span>关于</span></button>
         </nav>
-        <div class="side-foot">本地运行 · v1.0.3</div>
+        <div class="side-foot">本地运行 · v1.0.4</div>
       </aside>
       <div class="app-main">
         <section class="view" id="view-brush">
@@ -344,6 +351,14 @@
               </div>
             </div>
             <div class="setting-row">
+              <div><strong>自动登录</strong><p class="muted">启动时用本机加密保存的 Cookie 恢复登录；关闭会立即删除保存的会话。</p></div>
+              <label class="switch"><input type="checkbox" id="autoLoginToggle"><span class="track"></span><span class="switch-text" id="autoLoginState">已关闭</span></label>
+            </div>
+            <div class="setting-row">
+              <div><strong>登录信息</strong><p class="muted">只保存 Cookie，不保存账号密码。文件位于 <code>%APPDATA%\学习通刷课\session.bin</code>。</p></div>
+              <button class="btn ghost" id="clearLoginBtn" type="button">清除已保存登录</button>
+            </div>
+            <div class="setting-row">
               <div><strong>数据位置</strong><p class="muted">主题和开关存在浏览器本地；AI 配置存在本机 <code>%APPDATA%\学习通刷课\config.json</code>。</p></div>
             </div>
           </div>
@@ -353,7 +368,7 @@
           <div class="panel about">
             <div class="about-head">
               <span class="about-eyebrow">LOCAL · WINDOWS · SINGLE FILE</span>
-              <h2>学习通刷课助手 <span class="about-version">v1.0.3</span></h2>
+              <h2>学习通刷课助手 <span class="about-version">v1.0.4</span></h2>
               <p class="muted">把视频、文档、阅读和章节测验收进一个窗口。所有请求只从本机发出，不上传课程数据。</p>
             </div>
             <div class="about-links">
@@ -363,7 +378,7 @@
             </div>
             <dl class="about-meta">
               <div><dt>作者</dt><dd>AkiraNyx</dd></div>
-              <div><dt>版本</dt><dd>v1.0.3</dd></div>
+              <div><dt>版本</dt><dd>v1.0.4</dd></div>
               <div><dt>代码协议</dt><dd>GNU AGPL-3.0</dd></div>
               <div><dt>桌面</dt><dd>Microsoft Edge WebView2 · 单文件 exe</dd></div>
               <div><dt>界面</dt><dd>暖纸色设计 · anime.js v4 · Lucide</dd></div>

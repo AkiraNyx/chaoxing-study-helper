@@ -56,7 +56,7 @@
 | 功能 | 说明 |
 | --- | --- |
 | 三种登录 | 扫码 / 账号密码 / Cookie，总有一种能进门 |
-| 记住登录 | 可选 DPAPI 加密保存会话，下次启动自动恢复；退出即清除 |
+| 记住登录 | 可选 DPAPI 加密保存会话，下次启动自动恢复；设置页可开关或清除 |
 | 课程列表 | 搜索、多选、每门课显示「X 章 · Y 节 · 任务点 n/m」 |
 | 自动刷课 | 视频、文档、阅读；倍速 1.0×–3.0×，实时日志和两位小数进度 |
 | 独立做题块 | 扫描章节测验、搜索、按完成状态筛选、逐题作答 |
@@ -116,7 +116,7 @@ flowchart LR
 4. 想做题就切到「做题」→「刷新测验」→ 点「作答」
 5. 卡住了就点右上角「诊断」，它会告诉你哪一层断了
 
-> 不想拉整个仓库？直接去 [Releases](https://github.com/AkiraNyx/chaoxing-study-helper/releases) 下载 `chaoxing-study-helper-v1.0.3.exe`。
+> 不想拉整个仓库？直接去 [Releases](https://github.com/AkiraNyx/chaoxing-study-helper/releases) 下载 `chaoxing-study-helper-v1.0.4.exe`。
 
 > 首次启动会解包到临时目录，慢一两秒是正常的。SmartScreen 拦截就点「更多信息 → 仍要运行」。
 
