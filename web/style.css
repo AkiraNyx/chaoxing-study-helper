@@ -1395,6 +1395,18 @@ code { font-family: var(--mono); font-size: 11.5px; color: var(--ink-2); }
   .about-meta { grid-template-columns: minmax(0, 1fr); }
 }
 
+.remember {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 4px 0 14px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+.remember input { margin-top: 2px; accent-color: var(--accent); flex: none; }
+
 /* ---------------------------------------------------------------- 深色主题 */
 :root[data-theme="dark"] {
   color-scheme: dark;

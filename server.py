@@ -23,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
 
 import chaoxing
+import session_store
 from ai_client import AIClient, AIError
 
 
@@ -45,6 +46,17 @@ def load_config() -> dict:
 def save_config(config: dict) -> None:
     with open(_config_path(), "w", encoding="utf-8") as handle:
         json.dump(config, handle, ensure_ascii=False, indent=2)
+
+
+def _cookie_header(client: chaoxing.Client) -> str:
+    return "; ".join(f"{item.name}={item.value}" for item in client.jar)
+
+
+def _save_login(client: chaoxing.Client) -> bool:
+    try:
+        return session_store.save(_cookie_header(client))
+    except (OSError, ValueError):
+        return False
 
 
 def ai_from_config(config: dict | None = None) -> AIClient | None:
@@ -114,6 +126,7 @@ class AppState:
         self.scan_percent = 0.0
         self.scan_current = ""
         self.scan_result = None
+        self.restore_attempted = False
 
     # -- 日志 / 状态 -------------------------------------------------------
     def add_quiz_log(self, level: str, text: str) -> None:
@@ -197,6 +210,31 @@ class AppState:
             if summary is not None:
                 self.summary = summary
             self.stop_event.clear()
+
+    def restore_login(self) -> None:
+        if self.client is not None or self.restore_attempted:
+            return
+        self.restore_attempted = True
+        cookie = session_store.load()
+        if not cookie:
+            return
+        client = CLIENT_FACTORY()
+        client.set_cookie_string(cookie)
+        try:
+            if not client.check_login():
+                session_store.clear()
+                return
+            with self.lock:
+                self.client = client
+            self.add_log("ok", "已恢复上次登录状态")
+            try:
+                courses = client.get_courses()
+                with self.lock:
+                    self.courses = courses
+            except (chaoxing.ChaoxingError, OSError):
+                pass
+        except (chaoxing.ChaoxingError, OSError):
+            session_store.clear()
 
     def reset_session(self) -> None:
         with self.lock:
@@ -693,6 +731,7 @@ class Handler(BaseHTTPRequestHandler):
         route = parsed.path
 
         if route == "/api/session":
+            STATE.restore_login()
             with STATE.lock:
                 return self._json({
                     "ok": True,
@@ -723,6 +762,9 @@ class Handler(BaseHTTPRequestHandler):
                     STATE.client = qr_client
                     STATE.qr_client = None
                 STATE.reset_session()
+                remember = (query.get("remember") or ["1"])[0] == "1"
+                if remember:
+                    _save_login(qr_client)
                 STATE.add_log("ok", f"扫码登录成功：{result.get('name') or qr_client.uid}")
             elif result.get("state") in ("cancelled", "error"):
                 with STATE.lock:
@@ -886,13 +928,16 @@ class Handler(BaseHTTPRequestHandler):
                 if not username or not password:
                     return self._error("请填写账号和密码")
                 client.login_with_password(username, password)
+            remember = bool(payload.get("remember", True))
+            if remember:
+                _save_login(client)
             with STATE.lock:
                 if STATE.running:
                     return self._error("正在刷课，请先停止", 409)
                 STATE.client = client
             STATE.reset_session()
             STATE.add_log("ok", f"登录成功：{client.name or client.uid}")
-            return self._json({"ok": True, "name": client.name or client.uid})
+            return self._json({"ok": True, "name": client.name or client.uid, "remembered": remember})
 
         if route == "/api/ai/config":
             config = load_config()
@@ -1086,6 +1131,8 @@ class Handler(BaseHTTPRequestHandler):
                 if STATE.running:
                     return self._error("正在刷课，请先停止", 409)
                 STATE.client = None
+                STATE.restore_attempted = True
+            session_store.clear()
             STATE.reset_session()
             return self._json({"ok": True})
 

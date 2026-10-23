@@ -17,6 +17,7 @@
 | `chaoxing.py` | 学习通客户端：登录、课程、章节、任务点、视频上报、测验读取/提交 |
 | `ai_client.py` | OpenAI 兼容 AI 客户端：`chat`、`test`、`list_models`，支持 `reasoning_effort` |
 | `font_decoder.py` | 测验页字体加密解码：抽取 base64 字体、字形哈希、映射回真字 |
+| `session_store.py` | Windows DPAPI 加密的 Cookie 会话存储 |
 | `font_map_table.json` | 字形哈希 → 字符映射表（30,884 条），随 exe 打包 |
 | `crypto.py` | 纯 Python AES-128-CBC，用于账号密码登录加密 |
 

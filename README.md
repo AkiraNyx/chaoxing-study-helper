@@ -56,6 +56,7 @@
 | 功能 | 说明 |
 | --- | --- |
 | 三种登录 | 扫码 / 账号密码 / Cookie，总有一种能进门 |
+| 记住登录 | 可选 DPAPI 加密保存会话，下次启动自动恢复；退出即清除 |
 | 课程列表 | 搜索、多选、每门课显示「X 章 · Y 节 · 任务点 n/m」 |
 | 自动刷课 | 视频、文档、阅读；倍速 1.0×–3.0×，实时日志和两位小数进度 |
 | 独立做题块 | 扫描章节测验、搜索、按完成状态筛选、逐题作答 |
@@ -115,7 +116,7 @@ flowchart LR
 4. 想做题就切到「做题」→「刷新测验」→ 点「作答」
 5. 卡住了就点右上角「诊断」，它会告诉你哪一层断了
 
-> 不想拉整个仓库？直接去 [Releases](https://github.com/AkiraNyx/chaoxing-study-helper/releases) 下载 `chaoxing-study-helper-v1.0.1.exe`。
+> 不想拉整个仓库？直接去 [Releases](https://github.com/AkiraNyx/chaoxing-study-helper/releases) 下载 `chaoxing-study-helper-v1.0.2.exe`。
 
 > 首次启动会解包到临时目录，慢一两秒是正常的。SmartScreen 拦截就点「更多信息 → 仍要运行」。
 
@@ -125,7 +126,7 @@ flowchart LR
 - **账号密码**：走学习通登录接口，密码只在本机加密后发出
 - **Cookie**：从浏览器复制整行 Cookie，适合扫码/密码被风控的时候
 
-Cookie 只放内存，不落盘；AI Key 存在 `%APPDATA%\学习通刷课\config.json`，界面只显示「已保存」。
+Cookie 默认只在内存里；勾选「记住登录状态」后，会用 Windows DPAPI 按当前用户加密存到 `%APPDATA%\学习通刷课\session.bin`，下次启动自动恢复，退出登录即删除。AI Key 存在同目录的 `config.json`，界面只显示「已保存」。
 
 ## 刷课是怎么刷的
 
@@ -191,6 +192,7 @@ Cookie 只放内存，不落盘；AI Key 存在 `%APPDATA%\学习通刷课\confi
 ├─ chaoxing.py             学习通客户端 / 刷课执行器
 ├─ ai_client.py            AI 客户端
 ├─ font_decoder.py         字体解密
+├─ session_store.py        DPAPI 加密登录会话
 ├─ LICENSE                 AGPL-3.0
 ├─ NOTICE                  版权声明（AkiraNyx）
 └─ ...

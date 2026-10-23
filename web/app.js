@@ -902,7 +902,7 @@ function shakeLogin() {
 async function submitLogin(event) {
   event.preventDefault();
   if (state.mode === "qrcode") return;
-  const payload = { mode: state.mode };
+  const payload = { mode: state.mode, remember: $("#rememberLogin").checked };
   if (state.mode === "cookie") {
     payload.cookie = $("#cookieInput").value.trim();
     if (!payload.cookie) return toast("请先粘贴 Cookie 再登录", "warn");
@@ -967,7 +967,7 @@ async function startQrLogin() {
 async function pollQr() {
   if (!state.qrActive || state.mode !== "qrcode") return;
   try {
-    const data = await api("/api/qrcode/status");
+    const data = await api(`/api/qrcode/status?remember=${$("#rememberLogin").checked ? 1 : 0}`);
     const status = $("#qrStatus");
     if (data.state === "waiting") {
       status.textContent = "等待扫码…";
