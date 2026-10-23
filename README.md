@@ -13,6 +13,8 @@
   <a href="#能做什么"><img alt="Features" src="https://img.shields.io/badge/FEATURES-OVERVIEW-1F1E1D?style=for-the-badge"></a>
   <a href="#做题是怎么做的"><img alt="Quiz" src="https://img.shields.io/badge/QUIZ-AI_ASSIST-D97757?style=for-the-badge"></a>
   <a href="#许可证"><img alt="License" src="https://img.shields.io/badge/LICENSE-AGPL--3.0-1F1E1D?style=for-the-badge"></a>
+  <a href="https://github.com/AkiraNyx/chaoxing-study-helper/releases"><img alt="Release" src="https://img.shields.io/github/v/release/AkiraNyx/chaoxing-study-helper?style=for-the-badge&color=D97757"></a>
+  <a href="https://github.com/AkiraNyx/chaoxing-study-helper"><img alt="GitHub" src="https://img.shields.io/github/stars/AkiraNyx/chaoxing-study-helper?style=for-the-badge&color=1F1E1D"></a>
   <img alt="Windows" src="https://img.shields.io/badge/WINDOWS-10%2F11-1F1E1D?style=for-the-badge&logo=windows&logoColor=F0EEE6">
   <img alt="Single File" src="https://img.shields.io/badge/SINGLE_FILE-19_MB-6B675F?style=for-the-badge">
 </p>
