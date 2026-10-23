@@ -524,9 +524,11 @@ async function submitQuizView() {
         : `提交失败：${data.message || "未知错误"}`;
     quizLog(data.submitted ? "ok" : (saved ? "warn" : "error"), resultText);
     toast(resultText, data.submitted ? "ok" : "warn");
+    if (data.submitted) {
+      markQuizPassed(item.jobid);
+      state.quizLoaded = true;
+    }
     closeQuiz();
-    state.quizLoaded = false;
-    loadQuizzes(true);
   } catch (error) {
     quizLog("error", error.message);
     toast(error.message, "error");

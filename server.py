@@ -1089,6 +1089,10 @@ class Handler(BaseHTTPRequestHandler):
                 )
             except chaoxing.ChaoxingError as exc:
                 return self._error(str(exc), 400)
+            if ok:
+                with STATE.lock:
+                    STATE.quiz_done.add(str(payload.get("jobid") or ""))
+                    STATE.quiz_cache.pop(_course.course_id, None)
             return self._json({
                 "ok": True,
                 "submitted": ok,
