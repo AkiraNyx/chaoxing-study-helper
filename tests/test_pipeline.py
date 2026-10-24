@@ -19,6 +19,8 @@ from tests import mock_chaoxing  # noqa: E402
 
 def main() -> None:
     base, mock = mock_chaoxing.serve()
+    original_ai = server.ai_from_config
+    server.ai_from_config = lambda config=None: None
     try:
         client = chaoxing.Client(mooc1=base, mooc2=base, passport=base, sso=base)
         client.login_with_password("test-user", "test-pass")
@@ -79,6 +81,7 @@ def main() -> None:
         print("E2E OK:", summary)
         print("reports:", len(reports), "| enc all ok | progress:", progress[:3], "...", progress[-1])
     finally:
+        server.ai_from_config = original_ai
         mock.shutdown()
         mock.server_close()
 

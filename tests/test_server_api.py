@@ -30,6 +30,8 @@ def call(base: str, method: str, path: str, payload: dict | None = None) -> dict
 
 def main() -> None:
     mock_base, mock = mock_chaoxing.serve()
+    original_ai = server.ai_from_config
+    server.ai_from_config = lambda config=None: None
     client = chaoxing.Client(mooc1=mock_base, mooc2=mock_base, passport=mock_base, sso=mock_base)
     client.login_with_password("demo", "demo")
 
@@ -80,6 +82,7 @@ def main() -> None:
         print("SERVER API OK:", summary)
         print("logs:", len(status["logs"]), "| reports:", len(calls), "| percent:", status["percent"])
     finally:
+        server.ai_from_config = original_ai
         httpd.shutdown()
         httpd.server_close()
         mock.shutdown()

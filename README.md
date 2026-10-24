@@ -120,7 +120,7 @@ flowchart LR
 5. 想考试就切到「考试」→「刷新考试」→「开始」（会立即开始计时）
 6. 卡住了就点右上角「诊断」，它会告诉你哪一层断了
 
-> 不想拉整个仓库？直接去 [Releases](https://github.com/AkiraNyx/chaoxing-study-helper/releases) 下载 `chaoxing-study-helper-v1.1.1.exe`。
+> 不想拉整个仓库？直接去 [Releases](https://github.com/AkiraNyx/chaoxing-study-helper/releases) 下载 `chaoxing-study-helper-v1.1.2.exe`。
 
 > 首次启动会解包到临时目录，慢一两秒是正常的。SmartScreen 拦截就点「更多信息 → 仍要运行」。
 

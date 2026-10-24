@@ -29,8 +29,19 @@ class WindowApi:
             self._window.minimize()
 
     def maximize(self) -> None:
-        if self._window:
-            self._window.maximize()
+        if not self._window:
+            return
+        try:
+            # 无边框窗口在 WinForms 里默认会连任务栏一起盖住；把最大化边界
+            # 限制到当前显示器的工作区，行为才和普通窗口的“最大化”一致。
+            from System.Windows.Forms import Screen
+
+            self._window.native.MaximizedBounds = Screen.FromControl(
+                self._window.native
+            ).WorkingArea
+        except Exception:  # noqa: BLE001
+            pass
+        self._window.maximize()
 
     def restore(self) -> None:
         if self._window:
