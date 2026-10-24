@@ -785,7 +785,7 @@ def _brush_worker(client: chaoxing.Client, courses: list[chaoxing.Course], optio
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "ChaoxingHelper/1.1.5"
+    server_version = "ChaoxingHelper/1.1.6"
     protocol_version = "HTTP/1.1"
 
     def log_message(self, *args):  # 静默
@@ -1619,6 +1619,11 @@ class Handler(BaseHTTPRequestHandler):
                 STATE.summary = None
                 session_id = STATE.session_id
             STATE.add_log("info", f"开始任务：{len(courses)} 门课程，{options.speed:g}× 倍速")
+            if options.speed > 3.0:
+                STATE.add_log(
+                    "warn",
+                    f"当前 {options.speed:g}×；若视频到结尾仍不确认完成，请降到 1.5×–2× 后重试",
+                )
             thread = threading.Thread(
                 target=_brush_worker, args=(client, courses, options, session_id), daemon=True,
                 name="brush-worker",

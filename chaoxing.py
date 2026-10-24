@@ -533,6 +533,16 @@ def _job_from_card(card: dict) -> Optional[Job]:
     )
 
 
+def _strip_choice_suffix(options: list[str]) -> list[str]:
+    """去掉平台给每个选项追加的无障碍“选择”尾缀。"""
+    if len(options) < 2:
+        return options
+    stripped = [re.sub(r"\s*选择\s*$", "", item).strip() for item in options]
+    if all(stripped) and all(re.search(r"选择\s*$", item) for item in options):
+        return stripped
+    return options
+
+
 def parse_quiz_html(html: str, decoder=None) -> tuple[dict, list[Question]]:
     root = parse_html(html)
     if decoder is None:
@@ -569,6 +579,7 @@ def parse_quiz_html(html: str, decoder=None) -> tuple[dict, list[Question]]:
                     text = decoder(text)
                 if text:
                     options.append(text)
+        options = _strip_choice_suffix(options)
         if qid:
             questions.append(Question(qid, code, type_map.get(code, "unknown"), title, options))
     return form, questions
@@ -684,7 +695,7 @@ def _parse_exam_question(node: Node) -> Optional[ExamQuestion]:
             break
     code = str(type_code or "0")
     title = _clean_exam_title(node.find("div", "tit"))
-    options: list[tuple[str, str]] = []
+    raw_options: list[tuple[str, str]] = []
     for opt in node.find_all("div"):
         if not (opt.has_class("answerList") and opt.has_class("radioList")):
             continue
@@ -693,7 +704,12 @@ def _parse_exam_question(node: Node) -> Optional[ExamQuestion]:
         text = cc.text() if cc else opt.text()
         text = re.sub(r"\s+", " ", text).strip()
         if text:
-            options.append((key or chr(65 + len(options)), text))
+            raw_options.append((key or chr(65 + len(raw_options)), text))
+    cleaned = _strip_choice_suffix([text for _key, text in raw_options])
+    options = [
+        (key, cleaned[index])
+        for index, (key, _text) in enumerate(raw_options)
+    ]
     blanks: list[str] = []
     for blank in node.find_all("div"):
         if not (blank.has_class("completionList") and blank.has_class("objectAuswerList")):
@@ -1853,8 +1869,16 @@ class Runner:
             if play - last_report >= wait or play >= duration:
                 if play >= duration:
                     end_retries += 1
+                    if end_retries == 1:
+                        self._log(
+                            "warn",
+                            f"     已到视频结尾但服务器未确认；若反复出现请把倍速降到 1.5×–2×：{name}",
+                        )
                     if end_retries > self.options.max_retry:
-                        self._log("warn", f"     服务器未确认完成，跳过（可能带弹题/人脸校验）：{name}")
+                        self._log(
+                            "warn",
+                            f"     服务器未确认完成，跳过（可能弹题/人脸，也可能倍速过高）：{name}",
+                        )
                         return False
                     if not self._pause(random.uniform(2.5, 6.0)):
                         return False
@@ -1990,6 +2014,17 @@ def _selftest() -> None:
     assert len(questions) == 2, questions
     assert questions[0].type == "single" and questions[0].options[0] == ("A", "A. 甲")
     assert questions[1].type == "completion" and questions[1].blanks == ["第1空"]
+
+    suffix_html = """
+    <div class="questionWrap singleQuesId ans-cc-exam allAnswerList">
+      <input name="questionId" value="9101"><input name="type9101" value="0">
+      <div class="tit">1. 带平台尾缀的题目</div>
+      <div class="answerList radioList" name="A"><cc>彭德怀选择</cc></div>
+      <div class="answerList radioList" name="B"><cc>朱德选择</cc></div>
+    </div>
+    """
+    _form, suffix_questions = parse_exam_questions(suffix_html)
+    assert [text for _key, text in suffix_questions[0].options] == ["彭德怀", "朱德"]
 
     print("chaoxing selftest OK")
 
