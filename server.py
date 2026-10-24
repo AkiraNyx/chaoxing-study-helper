@@ -690,7 +690,7 @@ def _brush_worker(client: chaoxing.Client, courses: list[chaoxing.Course], optio
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "ChaoxingHelper/1.1.2"
+    server_version = "ChaoxingHelper/1.1.3"
     protocol_version = "HTTP/1.1"
 
     def log_message(self, *args):  # 静默

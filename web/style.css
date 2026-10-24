@@ -787,6 +787,7 @@ input[type="range"]::-moz-range-thumb {
   box-shadow: 0 1px 3px rgba(31, 30, 29, 0.2);
 }
 .speed-marks { display: flex; justify-content: space-between; font-size: 10px; color: var(--faint); letter-spacing: 0.04em; }
+.speed-marks .suggest { color: var(--accent-deep); font-weight: 600; }
 
 .switches { display: flex; flex-direction: column; gap: 2px; }
 .switch {

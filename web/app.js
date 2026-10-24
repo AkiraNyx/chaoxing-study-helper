@@ -34,6 +34,7 @@ const state = {
   chapterTotal: new Map(),
   courseGeneration: 0,
   quizLoaded: false,
+  quizScanning: false,
   exams: [],
   examLoaded: false,
   examFilter: "all",
@@ -168,6 +169,7 @@ let quizScanSince = 0;
 
 async function loadQuizzes(force = false) {
   const host = $("#quizList");
+  if (state.quizScanning) return;
   if (!state.selected.size) {
     state.quizLoaded = false;
     $("#quizScan").hidden = true;
@@ -178,6 +180,7 @@ async function loadQuizzes(force = false) {
   $("#quizScan").hidden = false;
   host.hidden = true;
   $("#quizConsole").innerHTML = '<div class="console-empty" id="quizConsoleEmpty">等待扫描日志…</div>';
+  state.quizScanning = true;
   try {
     await api("/api/quizzes/scan", postJson({
       indices: [...state.selected],
@@ -186,6 +189,15 @@ async function loadQuizzes(force = false) {
     quizScanSince = 0;
     pollQuizScan();
   } catch (error) {
+    if (error.status === 409 && !state.running) {
+      // 页面刷新/切换视图时，服务端可能已经在扫描；接上进度而不是再开一轮。
+      quizScanSince = 0;
+      $("#quizScan").hidden = false;
+      host.hidden = true;
+      pollQuizScan();
+      return;
+    }
+    state.quizScanning = false;
     $("#quizScan").hidden = true;
     host.hidden = false;
     state.quizLoaded = false;
@@ -205,17 +217,20 @@ async function pollQuizScan() {
     $("#quizScanBar").style.width = `${percent}%`;
     $("#quizScanCurrent").textContent = data.current || "";
     if (data.running) {
+      state.quizScanning = true;
       window.setTimeout(pollQuizScan, 600);
       return;
     }
     $("#quizScan").hidden = true;
     $("#quizList").hidden = false;
     const result = data.result || {};
+    state.quizScanning = false;
     state.quizLoaded = true;
     renderQuizList(result.quizzes || []);
     updateOverallProgress();
     if (result.error) toast(result.error, "error");
   } catch (error) {
+    state.quizScanning = false;
     $("#quizScan").hidden = true;
     $("#quizList").hidden = false;
     toast(error.message, "error");
@@ -1302,6 +1317,8 @@ function handleAuthLost() {
   state.chapterTotal.clear();
   state.quizItems = [];
   state.quizLoaded = false;
+  state.quizScanning = false;
+  quizScanSince = 0;
   state.courseGeneration += 1;
   state.stats = { done: 0, failed: 0 };
   state.exams = [];
@@ -1922,6 +1939,9 @@ function readOptions() {
 
 async function startBrush() {
   if (state.running) return;
+  if (state.quizScanning) {
+    return toast("章节测验还在扫描，等扫描结束后再开始刷课", "warn");
+  }
   if (!state.selected.size) return toast("请先勾选要刷的课程", "warn");
   $("#startBtn").disabled = true;
   try {
@@ -2232,7 +2252,7 @@ function closeChapters() {
 function updateSpeedUi() {
   $("#speed").value = String(state.speed);
   $("#speedValue").textContent = `${state.speed.toFixed(1)}×`;
-  const percent = ((state.speed - 1) / 2) * 100;
+  const percent = ((state.speed - 1) / 4) * 100;
   $("#speed").style.setProperty("--p", `${percent}%`);
 }
 
@@ -2259,7 +2279,7 @@ function restorePrefs() {
     prefs = {};
   }
   if (typeof prefs.speed === "number") {
-    state.speed = Math.min(3, Math.max(1, prefs.speed));
+    state.speed = Math.min(5, Math.max(1, prefs.speed));
   }
   const mapping = {
     skipFinished: "#optSkipFinished",

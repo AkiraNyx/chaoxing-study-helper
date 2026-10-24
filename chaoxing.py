@@ -1597,7 +1597,7 @@ class Options:
             return max(low, min(high, value))
 
         return cls(
-            speed=num("speed", 1.5, 1.0, 3.0),
+            speed=num("speed", 1.5, 1.0, 5.0),
             skip_finished=bool(data.get("skip_finished", True)),
             do_document=bool(data.get("do_document", True)),
             do_read=bool(data.get("do_read", True)),
