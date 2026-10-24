@@ -51,6 +51,7 @@
 | `tests/test_qr_login.py` | 扫码状态机 |
 | `tests/test_quiz_api.py` | 测验保存/提交语义、401 清理、POST 来源校验 |
 | `tests/test_exam.py` | 考试列表、封面、开始、逐题暂存、finalize 交卷 |
+| `tests/test_audit_regressions.py` | 会话隔离、答案语义、缓存身份、失败回滚回归 |
 | `docs/*.png` | 界面截图（部分为早期版本，以实际界面为准） |
 | `docs/hero.webp` | README 头图（项目横幅，HTML 渲染） |
 | `docs/mascot.webp` | Q 版鲸鱼娘，文档吉祥物（CC BY-NC-SA 4.0） |

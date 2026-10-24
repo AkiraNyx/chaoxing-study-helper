@@ -113,7 +113,8 @@ def main() -> None:
         assert data["saved"] is True and data["submitted"] is False, data
         assert data["missing"] == 1, data
         assert client.save_flags[-1] is True, client.save_flags
-        assert "work-1" not in server.STATE.quiz_done, server.STATE.quiz_done
+        done_key = server._quiz_done_key(course, "work-1")
+        assert done_key not in server.STATE.quiz_done, server.STATE.quiz_done
 
         # 2. 全部答完：正式提交，才标记完成
         status, data = call(base, "POST", "/api/quiz/submit", {
@@ -126,7 +127,7 @@ def main() -> None:
         assert data["submitted"] is True and data["saved"] is False, data
         assert data["missing"] == 0, data
         assert client.save_flags[-1] is False, client.save_flags
-        assert "work-1" in server.STATE.quiz_done, server.STATE.quiz_done
+        assert done_key in server.STATE.quiz_done, server.STATE.quiz_done
 
         # 3. 已删除的 POST 详情接口应该 404，而不是 500
         status, data = call(base, "POST", "/api/quiz/detail", {})

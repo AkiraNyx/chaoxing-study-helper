@@ -121,8 +121,8 @@ class LoginError(ChaoxingError):
     """登录失败。"""
 
 
-class NotLoggedIn(ChaoxingError):
-    """会话失效。"""
+class NotLoggedIn(Exception):
+    """会话失效；不继承业务错误，避免被局部 except 吞掉。"""
 
 
 class ExamError(ChaoxingError):
@@ -337,6 +337,10 @@ class ExamPaper:
     need_code: bool = False
     saved_ids: set[str] = field(default_factory=set)
     fetched_at: float = field(default_factory=time.time)
+    attempt_id: str = field(default_factory=lambda: secrets.token_hex(8))
+    deadline: float = 0.0
+    finalized: bool = False
+    lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1162,7 +1166,7 @@ class Client:
         form, questions = parse_exam_questions(body)
         if not questions:
             raise ExamError("没有解析到考试题目，页面结构可能已更新")
-        return ExamPaper(
+        paper = ExamPaper(
             exam_id=exam.exam_id,
             course_id=course.course_id,
             clazz_id=course.clazz_id,
@@ -1179,6 +1183,8 @@ class Client:
             need_captcha=cover["need_captcha"],
             need_code=cover["need_code"],
         )
+        paper.deadline = paper.fetched_at + (paper.enc_remain_time or paper.remain_time)
+        return paper
 
     def _submit_exam_one(self, paper: ExamPaper, index: int, question: Optional[ExamQuestion],
                          raw, final: bool) -> dict:
@@ -1231,6 +1237,8 @@ class Client:
             result = json.loads(body)
         except json.JSONDecodeError as exc:
             raise ExamError(f"交卷响应解析失败：{body[:120]}") from exc
+        if not isinstance(result, dict):
+            raise ExamError("交卷响应格式异常")
         if str(result.get("status")) != "success":
             raise ExamError(str(result.get("msg") or "交卷失败"))
         if not final:
@@ -1239,6 +1247,8 @@ class Client:
                 paper.last_update_time = _to_int(parts[0])
                 paper.enc_remain_time = _to_int(parts[1])
                 paper.enc = parts[2]
+                if paper.enc_remain_time > 0:
+                    paper.deadline = time.time() + paper.enc_remain_time
         if question is not None:
             paper.saved_ids.add(question.id)
         return result
@@ -1246,26 +1256,38 @@ class Client:
     def save_exam_answer(self, paper: ExamPaper, index: int,
                          question: ExamQuestion, raw) -> dict:
         """单题暂存，翻题/清空答案/自动保存都走这里。"""
-        return self._submit_exam_one(paper, index, question, raw, final=False)
+        with paper.lock:
+            if paper.finalized:
+                raise ExamError("考试已交卷")
+            return self._submit_exam_one(paper, index, question, raw, final=False)
 
     def finalize_exam(self, paper: ExamPaper) -> dict:
         """只交卷，不重复提交每道题。"""
-        result = self._submit_exam_one(paper, 0, None, None, final=True)
-        return {
-            "saved": len(paper.saved_ids),
-            "count": len(paper.questions),
-            "submitted": True,
-            "message": str(result.get("msg") or "已交卷"),
-        }
+        with paper.lock:
+            if paper.finalized:
+                raise ExamError("考试已交卷")
+            result = self._submit_exam_one(paper, 0, None, None, final=True)
+            paper.finalized = True
+            return {
+                "saved": len(paper.saved_ids),
+                "count": len(paper.questions),
+                "submitted": True,
+                "message": str(result.get("msg") or "已交卷"),
+            }
 
     def submit_exam(self, paper: ExamPaper, answers: dict) -> dict:
-        for index, question in enumerate(paper.questions):
-            raw = answers.get(question.id)
-            empty = raw is None or raw == "" or raw == []
-            if empty and question.id not in paper.saved_ids:
-                continue
-            self._submit_exam_one(paper, index, question, raw, final=False)
-        return self.finalize_exam(paper)
+        with paper.lock:
+            if paper.finalized:
+                raise ExamError("考试已交卷")
+            for index, question in enumerate(paper.questions):
+                raw = answers.get(question.id)
+                if raw is None:
+                    continue
+                empty = raw == "" or raw == []
+                if empty and question.id not in paper.saved_ids:
+                    continue
+                self._submit_exam_one(paper, index, question, raw, final=False)
+            return self.finalize_exam(paper)
 
     # -- 课程 / 章节 / 任务点 ----------------------------------------------
     def get_courses(self) -> list[Course]:
@@ -1441,6 +1463,10 @@ class Client:
         for key in ("status", "isPassed", "success"):
             if key in data:
                 return _as_bool(data[key])
+        if data.get("error"):
+            return False
+        if "code" in data:
+            return str(data["code"]).strip().lower() in {"0", "200", "ok", "success", "true"}
         return True
 
     def study_document(self, course: Course, job: Job, info: dict) -> bool:
@@ -1589,6 +1615,8 @@ class Options:
 
     @classmethod
     def from_dict(cls, data: dict) -> "Options":
+        if not isinstance(data, dict):
+            raise ValueError("options 必须是对象")
         def num(key, default, low, high):
             try:
                 value = float(data.get(key, default))

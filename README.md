@@ -120,7 +120,7 @@ flowchart LR
 5. 想考试就切到「考试」→「刷新考试」→「开始」（会立即开始计时）
 6. 卡住了就点右上角「诊断」，它会告诉你哪一层断了
 
-> 不想拉整个仓库？直接去 [Releases](https://github.com/AkiraNyx/chaoxing-study-helper/releases) 下载 `chaoxing-study-helper-v1.1.4.exe`。
+> 不想拉整个仓库？直接去 [Releases](https://github.com/AkiraNyx/chaoxing-study-helper/releases) 下载 `chaoxing-study-helper-v1.1.5.exe`。
 
 > 首次启动会解包到临时目录，慢一两秒是正常的。SmartScreen 拦截就点「更多信息 → 仍要运行」。
 
@@ -236,6 +236,9 @@ python tests/test_quiz_api.py
 
 # 考试列表 / 封面 / 开始 / 逐题暂存 / 交卷
 python tests/test_exam.py
+
+# 审查回归：会话隔离、答案语义、缓存身份、失败回滚
+python tests/test_audit_regressions.py
 
 # 本地考试演示（不连学习通）
 python demo_exam.py

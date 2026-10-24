@@ -103,6 +103,7 @@ MIME = {
 class AppState:
     def __init__(self):
         self.lock = threading.RLock()
+        self.session_id = 0
         self.client: Optional[chaoxing.Client] = None
         self.qr_client: Optional[chaoxing.Client] = None
         self.qr_created = 0.0
@@ -133,6 +134,7 @@ class AppState:
         self.restore_attempted = False
         self.exam_cache = {}
         self.exam_papers: dict[str, chaoxing.ExamPaper] = {}
+        self.exam_starting = False
 
     # -- 日志 / 状态 -------------------------------------------------------
     def add_quiz_log(self, level: str, text: str) -> None:
@@ -232,6 +234,7 @@ class AppState:
                 return
             with self.lock:
                 self.client = client
+                self.session_id += 1
             self.add_log("ok", "已恢复上次登录状态")
             try:
                 courses = client.get_courses()
@@ -246,15 +249,36 @@ class AppState:
         with self.lock:
             self.courses = []
             self.qr_client = None
+            self.running = False
+            self.phase = "idle"
+            self.stop_event.set()
             self.logs.clear()
             self.seq = 0
             self.percent = 0
             self.current = ""
-            self.phase = "idle"
             self.stats = {"done": 0, "failed": 0, "skipped": 0}
             self.summary = None
+            self.quiz_cache.clear()
+            self.quiz_done.clear()
+            self.quiz_running = False
+            self.quiz_logs.clear()
+            self.quiz_seq = 0
+            self.quiz_percent = 0.0
+            self.quiz_current = ""
+            self.quiz_summary = None
+            self.scan_running = False
+            self.scan_logs.clear()
+            self.scan_seq = 0
+            self.scan_percent = 0.0
+            self.scan_current = ""
+            self.scan_result = None
             self.exam_cache.clear()
             self.exam_papers.clear()
+
+    def task_active(self) -> bool:
+        with self.lock:
+            return bool(self.running or self.quiz_running or self.scan_running
+                        or self.exam_starting)
 
     def snapshot(self, since: int) -> dict:
         with self.lock:
@@ -276,6 +300,20 @@ class AppState:
 STATE = AppState()
 CLIENT_FACTORY = chaoxing.Client
 QR_TTL = 150
+
+
+def _course_key(course: chaoxing.Course) -> tuple[str, str, str]:
+    """缓存身份必须包含课程关系，不能只用 course_id。"""
+    return (str(course.course_id), str(course.clazz_id), str(course.cpi))
+
+
+def _quiz_done_key(course: chaoxing.Course, jobid: str) -> str:
+    return ":".join((*_course_key(course), str(jobid)))
+
+
+def _session_is_current(session_id: int, client: chaoxing.Client) -> bool:
+    with STATE.lock:
+        return STATE.session_id == session_id and STATE.client is client
 
 
 def diagnose(client: chaoxing.Client) -> dict:
@@ -444,7 +482,7 @@ def _scan_course_quizzes(client: chaoxing.Client, course: chaoxing.Course,
             "course_index": course_index,
             "point_id": point.id,
             "jobid": job.jobid,
-            "passed": passed or job.jobid in STATE.quiz_done,
+            "passed": passed or _quiz_done_key(course, job.jobid) in STATE.quiz_done,
         })
     items.sort(key=lambda item: item.get("passed", False))
     return items
@@ -455,7 +493,12 @@ def _normalize_quiz_answer(question, raw) -> str:
         raw = "".join(str(item) for item in raw)
     raw = str(raw).strip()
     if question.type == "judgement":
-        return "true" if raw.lower() in {"true", "t", "对", "正确", "是"} else "false"
+        value = raw.lower()
+        if value in {"true", "t", "1", "对", "正确", "是", "√"}:
+            return "true"
+        if value in {"false", "f", "0", "错", "错误", "否", "×"}:
+            return "false"
+        return ""
     if question.type in {"single", "multiple"}:
         letters = "".join(sorted(set(re.findall(r"[A-Za-z]", raw.upper()))))
         return letters[:1] if question.type == "single" else letters
@@ -490,6 +533,8 @@ def _exam_payload(paper: chaoxing.ExamPaper) -> dict:
         "title": paper.title,
         "remain_time": paper.enc_remain_time or paper.remain_time,
         "fetched_at": paper.fetched_at,
+        "attempt_id": paper.attempt_id,
+        "deadline": paper.deadline or (paper.fetched_at + (paper.enc_remain_time or paper.remain_time)),
         "saved": sorted(paper.saved_ids),
         "questions": [
             {
@@ -507,14 +552,16 @@ def _exam_payload(paper: chaoxing.ExamPaper) -> dict:
 
 
 def _find_exam(client: chaoxing.Client, course: chaoxing.Course, exam_id: str) -> chaoxing.Exam:
+    key = _course_key(course)
     with STATE.lock:
-        cached = STATE.exam_cache.get(course.course_id)
+        cached = STATE.exam_cache.get(key)
     if cached and time.time() - cached[0] < 300:
         exams = cached[1]
     else:
         exams = client.get_exams(course)
         with STATE.lock:
-            STATE.exam_cache[course.course_id] = (time.time(), exams)
+            if STATE.client is client:
+                STATE.exam_cache[key] = (time.time(), exams)
     exam = next((item for item in exams if item.exam_id == str(exam_id)), None)
     if exam is None:
         raise chaoxing.ExamError("考试不存在或列表已变化，请刷新考试列表")
@@ -537,7 +584,7 @@ def _load_quiz(client: chaoxing.Client, course_index: int, point_id: str, jobid:
 
 
 def _quiz_worker(client: chaoxing.Client, course: chaoxing.Course, point_id: str,
-                 jobid: str, ai: AIClient) -> None:
+                 jobid: str, ai: AIClient, session_id: int) -> None:
     state = STATE
     summary: dict = {}
 
@@ -545,6 +592,8 @@ def _quiz_worker(client: chaoxing.Client, course: chaoxing.Course, point_id: str
         state.add_quiz_log(level, text)
 
     try:
+        if not _session_is_current(session_id, client):
+            raise chaoxing.NotLoggedIn("会话已切换，取消本次作答")
         state.set_quiz_progress(3, "读取章节")
         log("info", f"读取章节：{course.title}")
         points = client.get_points(course)
@@ -569,6 +618,8 @@ def _quiz_worker(client: chaoxing.Client, course: chaoxing.Course, point_id: str
         answers: dict[str, str] = {}
         total = len(quiz.questions)
         for index, question in enumerate(quiz.questions, start=1):
+            if not _session_is_current(session_id, client):
+                raise chaoxing.NotLoggedIn("会话已切换，取消本次作答")
             log("info", f"作答 {index}/{total}：{question.title[:40]}")
             try:
                 answers[question.id] = _ask_question(ai, question)
@@ -578,6 +629,8 @@ def _quiz_worker(client: chaoxing.Client, course: chaoxing.Course, point_id: str
             log("dim", f"  → {answers[question.id] or '未作答'}")
             state.set_quiz_progress(22 + index / max(1, total) * 68, f"作答 {index}/{total}")
         missing = sum(1 for question in quiz.questions if not answers.get(question.id))
+        if not _session_is_current(session_id, client):
+            raise chaoxing.NotLoggedIn("会话已切换，取消本次提交")
         state.set_quiz_progress(94, "提交答案")
         log("info", "提交答案…")
         save_only = missing > 0
@@ -594,54 +647,92 @@ def _quiz_worker(client: chaoxing.Client, course: chaoxing.Course, point_id: str
         else:
             log("error", f"提交失败：{message}")
         state.set_quiz_progress(100, "已完成")
+    except chaoxing.NotLoggedIn as exc:
+        log("error", str(exc))
+        summary = {"submitted": False, "saved": False, "message": str(exc), "count": 0, "missing": 0}
     except (chaoxing.ChaoxingError, AIError, OSError) as exc:
         log("error", str(exc))
         summary = {"submitted": False, "saved": False, "message": str(exc), "count": 0, "missing": 0}
         state.set_quiz_progress(100, "失败")
     finally:
         with state.lock:
-            state.quiz_running = False
-            state.quiz_summary = summary
-            state.quiz_cache.pop(course.course_id, None)
+            if state.session_id == session_id:
+                state.quiz_running = False
+                state.quiz_summary = summary
+                state.quiz_cache.pop(_course_key(course), None)
 
 
-def _scan_worker(client: chaoxing.Client, entries: list[tuple[int, chaoxing.Course]], force: bool) -> None:
+def _scan_worker(client: chaoxing.Client, entries: list[tuple[int, chaoxing.Course]],
+                 force: bool, session_id: int) -> None:
     state = STATE
     all_items: list[dict] = []
+    def note(level: str, text: str) -> None:
+        if _session_is_current(session_id, client):
+            state.add_scan_log(level, text)
+
     try:
-        state.add_scan_log("info", "开始扫描章节测验…")
+        if not _session_is_current(session_id, client):
+            raise chaoxing.NotLoggedIn("会话已切换，取消本次扫描")
+        note("info", "开始扫描章节测验…")
         for position, (course_index, course) in enumerate(entries):
-            cached = state.quiz_cache.get(course.course_id)
+            if not _session_is_current(session_id, client):
+                raise chaoxing.NotLoggedIn("会话已切换，取消本次扫描")
+            key = _course_key(course)
+            cached = state.quiz_cache.get(key)
             if cached and not force and time.time() - cached[0] < 300:
-                items = cached[1]
-                state.add_scan_log("dim", f"{course.title}：使用缓存")
+                # 缓存行里的下标可能属于旧课程顺序；命中时按本次请求重写。
+                items = [
+                    {**item, "course_index": course_index}
+                    for item in cached[1]
+                ]
+                note("dim", f"{course.title}：使用缓存")
             else:
                 def progress(percent: float, text: str, pos=position, title=course.title) -> None:
+                    if not _session_is_current(session_id, client):
+                        return
                     overall = ((pos + percent / 100) / len(entries)) * 100
                     state.set_scan_progress(overall, f"{title} · {text}")
 
                 items = _scan_course_quizzes(
-                    client, course, course_index, progress=progress, log=state.add_scan_log
+                    client, course, course_index, progress=progress, log=note
                 )
-                state.quiz_cache[course.course_id] = (time.time(), items)
+                if not _session_is_current(session_id, client):
+                    raise chaoxing.NotLoggedIn("会话已切换，取消本次扫描")
+                with state.lock:
+                    state.quiz_cache[key] = (time.time(), items)
             all_items.extend(items)
-        state.scan_result = {"quizzes": all_items}
+        if not _session_is_current(session_id, client):
+            raise chaoxing.NotLoggedIn("会话已切换，扫描结果已丢弃")
+        with state.lock:
+            state.scan_result = {"quizzes": all_items}
         state.add_scan_log("ok", f"扫描完成：共 {len(all_items)} 条测验")
         state.set_scan_progress(100, "扫描完成")
+    except chaoxing.NotLoggedIn as exc:
+        if _session_is_current(session_id, client):
+            state.add_scan_log("error", str(exc))
+            with state.lock:
+                state.scan_result = {"quizzes": all_items, "error": str(exc)}
+            state.set_scan_progress(100, "扫描失败")
     except (chaoxing.ChaoxingError, OSError) as exc:
-        state.add_scan_log("error", str(exc))
-        state.scan_result = {"quizzes": all_items, "error": str(exc)}
-        state.set_scan_progress(100, "扫描失败")
+        if _session_is_current(session_id, client):
+            state.add_scan_log("error", str(exc))
+            with state.lock:
+                state.scan_result = {"quizzes": all_items, "error": str(exc)}
+            state.set_scan_progress(100, "扫描失败")
     except Exception as exc:  # noqa: BLE001
-        state.add_scan_log("error", f"{type(exc).__name__}: {exc}")
-        state.scan_result = {"quizzes": all_items, "error": str(exc)}
-        state.set_scan_progress(100, "扫描失败")
+        if _session_is_current(session_id, client):
+            state.add_scan_log("error", f"{type(exc).__name__}: {exc}")
+            with state.lock:
+                state.scan_result = {"quizzes": all_items, "error": str(exc)}
+            state.set_scan_progress(100, "扫描失败")
     finally:
         with state.lock:
-            state.scan_running = False
+            if state.session_id == session_id:
+                state.scan_running = False
 
 
-def _brush_worker(client: chaoxing.Client, courses: list[chaoxing.Course], options: chaoxing.Options) -> None:
+def _brush_worker(client: chaoxing.Client, courses: list[chaoxing.Course], options: chaoxing.Options,
+                  session_id: int) -> None:
     def emit(level: str, text: str) -> None:
         STATE.add_log(level, text)
 
@@ -677,20 +768,24 @@ def _brush_worker(client: chaoxing.Client, courses: list[chaoxing.Course], optio
     except chaoxing.NotLoggedIn:
         emit("error", "登录已失效，请重新登录")
         summary = partial("登录已失效")
-    except Exception as exc:  # noqa: BLE001 - 兜底，保证线程状态复位        emit("error", f"运行异常：{exc}")
+    except Exception as exc:  # noqa: BLE001 - 兜底，保证线程状态复位
+        emit("error", f"运行异常：{exc}")
         summary = partial(str(exc))
     finally:
         with STATE.lock:
-            STATE.stats = {
-                "done": summary.get("done", 0),
-                "failed": summary.get("failed", 0),
-                "skipped": summary.get("skipped", 0),
-            }
-        STATE.finish(summary)
+            current = STATE.session_id == session_id
+            if current:
+                STATE.stats = {
+                    "done": summary.get("done", 0),
+                    "failed": summary.get("failed", 0),
+                    "skipped": summary.get("skipped", 0),
+                }
+        if current:
+            STATE.finish(summary)
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "ChaoxingHelper/1.1.4"
+    server_version = "ChaoxingHelper/1.1.5"
     protocol_version = "HTTP/1.1"
 
     def log_message(self, *args):  # 静默
@@ -761,13 +856,33 @@ class Handler(BaseHTTPRequestHandler):
         content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         return content_type in {"", "application/json"}
 
-    def _drop_session(self, message: str = "登录已失效，请重新登录") -> None:
-        """会话失效时清掉内存里的客户端，避免前端刷新后仍被判为已登录。"""
+    def _request_is_current(self, client) -> bool:
         with STATE.lock:
-            STATE.client = None
-            STATE.restore_attempted = True
-            if STATE.running:
+            return (
+                STATE.client is client
+                and STATE.session_id == getattr(self, "_request_session", STATE.session_id)
+            )
+
+    def _drop_session(self, client=None, session_id: int | None = None,
+                      message: str = "登录已失效，请重新登录") -> None:
+        """只允许当前会话的 401 清账号；旧请求迟到时不得清掉新登录。"""
+        with STATE.lock:
+            stale = (
+                (session_id is not None and session_id != STATE.session_id)
+                or (client is not None and STATE.client is not client)
+            )
+            if stale:
+                current = False
+            else:
+                current = True
+                STATE.client = None
+                STATE.restore_attempted = True
+                STATE.session_id += 1
                 STATE.stop_event.set()
+                STATE.reset_session()
+        if not current:
+            self._error("会话已切换，请重试", 409)
+            return
         self._error(message, 401)
 
     # -- 静态文件 ----------------------------------------------------------
@@ -792,10 +907,13 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         if not parsed.path.startswith("/api/"):
             return self._static(parsed.path)
+        with STATE.lock:
+            self._request_client = STATE.client
+            self._request_session = STATE.session_id
         try:
             self._api_get(parsed)
         except chaoxing.NotLoggedIn:
-            self._drop_session()
+            self._drop_session(self._request_client, self._request_session)
         except chaoxing.ChaoxingError as exc:
             self._error(str(exc), 400)
         except Exception as exc:  # noqa: BLE001
@@ -809,12 +927,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._error("Not found", 404)
         if not self._json_request_allowed():
             return self._reject("只接受本机页面的 JSON 请求")
+        with STATE.lock:
+            self._request_client = STATE.client
+            self._request_session = STATE.session_id
         try:
             self._api_post(parsed)
         except chaoxing.LoginError as exc:
             self._error(str(exc), 400)
         except chaoxing.NotLoggedIn:
-            self._drop_session()
+            self._drop_session(self._request_client, self._request_session)
         except chaoxing.ChaoxingError as exc:
             self._error(str(exc), 400)
         except Exception as exc:  # noqa: BLE001
@@ -858,18 +979,35 @@ class Handler(BaseHTTPRequestHandler):
                     STATE.qr_client = None
                 return self._json({"ok": True, "state": "expired"})
             result = qr_client.qr_poll()
+            with STATE.lock:
+                if STATE.qr_client is not qr_client:
+                    # 取消/重新生成二维码后，旧轮询不能继续登录。
+                    return self._json({"ok": True, "state": "cancelled"})
             if result.get("state") == "confirmed":
                 with STATE.lock:
-                    STATE.client = qr_client
-                    STATE.qr_client = None
-                STATE.reset_session()
+                    if STATE.task_active():
+                        STATE.qr_client = None
+                        busy = True
+                    else:
+                        busy = False
+                        STATE.client = qr_client
+                        STATE.qr_client = None
+                        STATE.session_id += 1
+                        STATE.reset_session()
+                if busy:
+                    return self._error("已有任务在运行，二维码登录未生效", 409)
                 remember = (query.get("remember") or ["1"])[0] == "1"
                 if remember:
-                    _save_login(qr_client)
+                    saved = _save_login(qr_client)
+                else:
+                    session_store.clear()
+                    saved = False
                 STATE.add_log("ok", f"扫码登录成功：{result.get('name') or qr_client.uid}")
+                return self._json({"ok": True, "remembered": saved, **result})
             elif result.get("state") in ("cancelled", "error"):
                 with STATE.lock:
-                    STATE.qr_client = None
+                    if STATE.qr_client is qr_client:
+                        STATE.qr_client = None
             return self._json({"ok": True, **result})
 
         if route == "/api/ai/config":
@@ -917,8 +1055,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(str(exc), 400)
             if quiz.completed:
                 with STATE.lock:
-                    STATE.quiz_done.add(jobid)
-                    STATE.quiz_cache.pop(_course.course_id, None)
+                    STATE.quiz_done.add(_quiz_done_key(_course, jobid))
+                    STATE.quiz_cache.pop(_course_key(_course), None)
             return self._json({
                 "ok": True,
                 "completed": quiz.completed,
@@ -952,18 +1090,23 @@ class Handler(BaseHTTPRequestHandler):
             errors = []
             for index in indices:
                 course = all_courses[index]
+                key = _course_key(course)
                 with STATE.lock:
-                    cached = STATE.exam_cache.get(course.course_id)
+                    cached = STATE.exam_cache.get(key)
                 if cached and not refresh and time.time() - cached[0] < 300:
                     exams = cached[1]
                 else:
                     try:
                         exams = client.get_exams(course)
+                    except chaoxing.NotLoggedIn:
+                        raise
                     except (chaoxing.ChaoxingError, OSError) as exc:
                         errors.append(f"{course.title}：{exc}")
                         continue
+                    if not self._request_is_current(client):
+                        return self._error("会话已切换，请重试", 409)
                     with STATE.lock:
-                        STATE.exam_cache[course.course_id] = (time.time(), exams)
+                        STATE.exam_cache[key] = (time.time(), exams)
                 for exam in exams:
                     items.append({
                         "course": course.title,
@@ -1024,21 +1167,30 @@ class Handler(BaseHTTPRequestHandler):
             items = []
             refresh = (query.get("refresh") or ["0"])[0] == "1"
             for course in courses:
-                cached = STATE.quiz_cache.get(course.course_id)
+                course_index = all_courses.index(course)
+                key = _course_key(course)
+                cached = STATE.quiz_cache.get(key)
                 if cached and not refresh and time.time() - cached[0] < 300:
-                    items.extend(cached[1])
+                    items.extend({
+                        **item, "course_index": course_index
+                    } for item in cached[1])
                     continue
                 try:
-                    course_items = _scan_course_quizzes(client, course, all_courses.index(course))
+                    course_items = _scan_course_quizzes(client, course, course_index)
                 except (chaoxing.ChaoxingError, OSError):
                     continue
-                STATE.quiz_cache[course.course_id] = (time.time(), course_items)
+                if not self._request_is_current(client):
+                    return self._error("会话已切换，请重试", 409)
+                with STATE.lock:
+                    STATE.quiz_cache[key] = (time.time(), course_items)
                 items.extend(course_items)
             return self._json({"ok": True, "quizzes": items})
 
         if route == "/api/courses":
             client = self._require_client()
             courses = client.get_courses()
+            if not self._request_is_current(client):
+                return self._error("会话已切换，请重试", 409)
             with STATE.lock:
                 STATE.courses = courses
             return self._json({
@@ -1110,9 +1262,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True, "saved": False})
 
         if route == "/api/login":
-            with STATE.lock:
-                if STATE.running:
-                    return self._error("正在刷课，请先停止", 409)
+            if STATE.task_active():
+                return self._error("已有任务在运行，请先停止或等待结束", 409)
             mode = payload.get("mode") or "password"
             client = CLIENT_FACTORY()
             if mode == "cookie":
@@ -1130,15 +1281,16 @@ class Handler(BaseHTTPRequestHandler):
                 client.login_with_password(username, password)
             remember = bool(payload.get("remember", True))
             with STATE.lock:
-                if STATE.running:
-                    return self._error("正在刷课，请先停止", 409)
+                if STATE.task_active():
+                    return self._error("已有任务在运行，请先停止或等待结束", 409)
                 STATE.client = client
+                STATE.session_id += 1
                 if remember:
                     saved = _save_login(client)
                 else:
                     session_store.clear()
                     saved = False
-            STATE.reset_session()
+                STATE.reset_session()
             STATE.add_log("ok", f"登录成功：{client.name or client.uid}")
             return self._json({"ok": True, "name": client.name or client.uid, "remembered": saved})
 
@@ -1167,11 +1319,8 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/quiz/solve":
             client = self._require_client()
             with STATE.lock:
-                if STATE.running:
-                    return self._error("正在刷课，请先停止", 409)
-                if STATE.quiz_running:
-                    return self._error("已有测验正在作答", 409)
                 courses = list(STATE.courses)
+                request_session = STATE.session_id
             try:
                 index = int(payload.get("course_index"))
                 course = courses[index]
@@ -1183,16 +1332,22 @@ class Handler(BaseHTTPRequestHandler):
             if ai is None:
                 return self._error("请先在 AI 接口页保存 API Key", 400)
             with STATE.lock:
+                if (STATE.client is not client
+                        or STATE.session_id != request_session):
+                    return self._error("会话已切换，请重试", 409)
+                if STATE.task_active():
+                    return self._error("已有任务在运行，请稍候", 409)
+                session_id = STATE.session_id
                 STATE.quiz_running = True
                 STATE.quiz_logs.clear()
                 STATE.quiz_seq = 0
                 STATE.quiz_percent = 0
                 STATE.quiz_current = "准备"
                 STATE.quiz_summary = None
-                STATE.quiz_cache.pop(course.course_id, None)
+                STATE.quiz_cache.pop(_course_key(course), None)
             threading.Thread(
                 target=_quiz_worker,
-                args=(client, course, point_id, jobid, ai),
+                args=(client, course, point_id, jobid, ai, session_id),
                 daemon=True,
                 name="quiz-worker",
             ).start()
@@ -1239,8 +1394,8 @@ class Handler(BaseHTTPRequestHandler):
             saved = bool(ok and save_only)
             if submitted:
                 with STATE.lock:
-                    STATE.quiz_done.add(str(payload.get("jobid") or ""))
-                    STATE.quiz_cache.pop(_course.course_id, None)
+                    STATE.quiz_done.add(_quiz_done_key(_course, str(payload.get("jobid") or "")))
+                    STATE.quiz_cache.pop(_course_key(_course), None)
             return self._json({
                 "ok": True,
                 "submitted": submitted,
@@ -1253,28 +1408,39 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/exam/start":
             client = self._require_client()
             with STATE.lock:
-                if STATE.running:
-                    return self._error("正在刷课，请先停止", 409)
+                if STATE.task_active():
+                    return self._error("已有任务在运行，请先停止或等待结束", 409)
+                STATE.exam_starting = True
+                request_session = STATE.session_id
                 courses = list(STATE.courses)
             try:
-                index = int(payload.get("course_index"))
-                course = courses[index]
-            except (TypeError, ValueError, IndexError):
-                return self._error("课程索引无效，请刷新考试列表", 400)
-            exam_id = str(payload.get("exam_id") or "")
-            code = str(payload.get("code") or "")
-            with STATE.lock:
-                existing = STATE.exam_papers.get(exam_id)
-            if existing is not None:
-                return self._json({"ok": True, "paper": _exam_payload(existing), "resumed": True})
-            try:
-                exam = _find_exam(client, course, exam_id)
-                paper = client.start_exam(course, exam, code)
-            except (chaoxing.ChaoxingError, OSError) as exc:
-                return self._error(str(exc), 400)
-            with STATE.lock:
-                STATE.exam_papers[paper.exam_id] = paper
-            return self._json({"ok": True, "paper": _exam_payload(paper), "resumed": False})
+                try:
+                    index = int(payload.get("course_index"))
+                    course = courses[index]
+                except (TypeError, ValueError, IndexError):
+                    return self._error("课程索引无效，请刷新考试列表", 400)
+                exam_id = str(payload.get("exam_id") or "")
+                code = str(payload.get("code") or "")
+                with STATE.lock:
+                    existing = STATE.exam_papers.get(exam_id)
+                if existing is not None:
+                    return self._json({"ok": True, "paper": _exam_payload(existing), "resumed": True})
+                try:
+                    exam = _find_exam(client, course, exam_id)
+                    paper = client.start_exam(course, exam, code)
+                except chaoxing.NotLoggedIn:
+                    raise
+                except (chaoxing.ChaoxingError, OSError) as exc:
+                    return self._error(str(exc), 400)
+                with STATE.lock:
+                    if (STATE.client is not client
+                            or STATE.session_id != request_session):
+                        return self._error("会话已切换，请重试", 409)
+                    STATE.exam_papers[paper.exam_id] = paper
+                return self._json({"ok": True, "paper": _exam_payload(paper), "resumed": False})
+            finally:
+                with STATE.lock:
+                    STATE.exam_starting = False
 
         if route == "/api/exam/answer":
             client = self._require_client()
@@ -1293,6 +1459,8 @@ class Handler(BaseHTTPRequestHandler):
                 answer = ""
             try:
                 client.save_exam_answer(paper, index, question, answer)
+            except chaoxing.ExamError as exc:
+                return self._error(str(exc), 409)
             except (chaoxing.ChaoxingError, OSError) as exc:
                 return self._error(str(exc), 400)
             return self._json({
@@ -1318,20 +1486,24 @@ class Handler(BaseHTTPRequestHandler):
                     result = client.finalize_exam(paper)
                 else:
                     result = client.submit_exam(paper, answers)
-            except (chaoxing.ChaoxingError, OSError) as exc:
+            except chaoxing.NotLoggedIn:
                 with STATE.lock:
                     STATE.exam_papers[exam_id] = paper
-                return self._error(str(exc), 400)
+                raise
+            except Exception as exc:  # noqa: BLE001 - 任何失败都必须保留可重试状态
+                with STATE.lock:
+                    STATE.exam_papers[exam_id] = paper
+                status = 409 if isinstance(exc, chaoxing.ExamError) else 400
+                return self._error(str(exc), status)
             with STATE.lock:
-                STATE.exam_cache.pop(paper.course_id, None)
+                STATE.exam_cache.pop((paper.course_id, paper.clazz_id, paper.cpi), None)
             return self._json({"ok": True, **result})
 
         if route == "/api/quizzes/scan":
             client = self._require_client()
             with STATE.lock:
-                if STATE.running or STATE.scan_running:
-                    return self._error("已有任务在运行，请稍候", 409)
                 all_courses = list(STATE.courses)
+                request_session = STATE.session_id
             raw = payload.get("indices") or []
             if isinstance(raw, str):
                 raw = [item for item in raw.split(",") if item]
@@ -1346,6 +1518,12 @@ class Handler(BaseHTTPRequestHandler):
             if not entries:
                 return self._error("请先在刷课页勾选要读取的课程", 400)
             with STATE.lock:
+                if (STATE.client is not client
+                        or STATE.session_id != request_session):
+                    return self._error("会话已切换，请重试", 409)
+                if STATE.task_active():
+                    return self._error("已有任务在运行，请稍候", 409)
+                session_id = STATE.session_id
                 STATE.scan_running = True
                 STATE.scan_logs.clear()
                 STATE.scan_seq = 0
@@ -1354,16 +1532,15 @@ class Handler(BaseHTTPRequestHandler):
                 STATE.scan_result = None
             threading.Thread(
                 target=_scan_worker,
-                args=(client, entries, bool(payload.get("force"))),
+                args=(client, entries, bool(payload.get("force")), session_id),
                 daemon=True,
                 name="quiz-scan",
             ).start()
             return self._json({"ok": True})
 
         if route == "/api/qrcode/start":
-            with STATE.lock:
-                if STATE.running:
-                    return self._error("正在刷课，请先停止", 409)
+            if STATE.task_active():
+                return self._error("已有任务在运行，请先停止或等待结束", 409)
             client = CLIENT_FACTORY()
             image = client.qr_start()
             with STATE.lock:
@@ -1389,12 +1566,13 @@ class Handler(BaseHTTPRequestHandler):
 
         if route == "/api/logout":
             with STATE.lock:
-                if STATE.running:
-                    return self._error("正在刷课，请先停止", 409)
+                if STATE.task_active():
+                    return self._error("已有任务在运行，请先停止或等待结束", 409)
                 STATE.client = None
                 STATE.restore_attempted = True
+                STATE.session_id += 1
+                STATE.reset_session()
             session_store.clear()
-            STATE.reset_session()
             return self._json({"ok": True})
 
         if route == "/api/diagnose":
@@ -1408,19 +1586,29 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/brush":
             client = self._require_client()
             with STATE.lock:
-                if STATE.running:
-                    return self._error("已经在刷课了", 409)
-                indices = payload.get("indices") or []
-                courses = []
-                for raw in indices:
-                    try:
-                        index = int(raw)
-                    except (TypeError, ValueError):
-                        continue
-                    if 0 <= index < len(STATE.courses):
-                        courses.append(STATE.courses[index])
-                if not courses:
-                    return self._error("请先选择要刷的课程")
+                indices = list(payload.get("indices") or [])
+                all_courses = list(STATE.courses)
+                request_session = STATE.session_id
+            courses = []
+            for raw in indices:
+                try:
+                    index = int(raw)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= index < len(all_courses):
+                    courses.append(all_courses[index])
+            if not courses:
+                return self._error("请先选择要刷的课程")
+            try:
+                options = chaoxing.Options.from_dict(payload.get("options") or {})
+            except (TypeError, ValueError) as exc:
+                return self._error(str(exc), 400)
+            with STATE.lock:
+                if (STATE.client is not client
+                        or STATE.session_id != request_session):
+                    return self._error("会话已切换，请重试", 409)
+                if STATE.task_active():
+                    return self._error("已有任务在运行，请稍候", 409)
                 if STATE.stop_event.is_set():
                     STATE.stop_event.clear()
                 STATE.running = True
@@ -1429,14 +1617,19 @@ class Handler(BaseHTTPRequestHandler):
                 STATE.current = "准备中"
                 STATE.stats = {"done": 0, "failed": 0, "skipped": 0}
                 STATE.summary = None
-                stop_event = STATE.stop_event
-            options = chaoxing.Options.from_dict(payload.get("options") or {})
+                session_id = STATE.session_id
             STATE.add_log("info", f"开始任务：{len(courses)} 门课程，{options.speed:g}× 倍速")
             thread = threading.Thread(
-                target=_brush_worker, args=(client, courses, options), daemon=True,
+                target=_brush_worker, args=(client, courses, options, session_id), daemon=True,
                 name="brush-worker",
             )
-            thread.start()
+            try:
+                thread.start()
+            except Exception:
+                with STATE.lock:
+                    STATE.running = False
+                    STATE.phase = "idle"
+                raise
             return self._json({"ok": True})
 
         if route == "/api/stop":

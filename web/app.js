@@ -36,6 +36,7 @@ const state = {
   quizLoaded: false,
   quizScanning: false,
   quizSelectionKey: "",
+  authGeneration: 0,
   exams: [],
   examLoaded: false,
   examFilter: "all",
@@ -46,6 +47,8 @@ const state = {
   examDeadline: 0,
   examTimer: null,
   examSubmitting: false,
+  examStarting: false,
+  examLoadToken: 0,
   examSavedIds: new Set(),
   examCleared: new Set(),
   examUnsupported: 0,
@@ -197,11 +200,13 @@ async function loadQuizzes(force = false) {
     pollQuizScan();
   } catch (error) {
     if (error.status === 409 && !state.running) {
-      // 页面刷新/切换视图时，服务端可能已经在扫描；接上进度而不是再开一轮。
-      quizScanSince = 0;
-      $("#quizScan").hidden = false;
-      host.hidden = true;
-      pollQuizScan();
+      // 无法确认服务器上的扫描属于当前课程选择，不能把别人的结果接进来。
+      state.quizScanning = false;
+      $("#quizScan").hidden = true;
+      host.hidden = false;
+      state.quizLoaded = false;
+      host.innerHTML = '<div class="chapter-note">另一个页面正在扫描试卷，请稍后重新刷新。</div>';
+      toast("另一个页面正在扫描试卷，请稍后再试", "warn");
       return;
     }
     state.quizScanning = false;
@@ -234,7 +239,12 @@ async function pollQuizScan() {
     state.quizScanning = false;
     if (!state.selected.size || quizSelectionKeyString() !== state.quizSelectionKey) {
       state.quizLoaded = false;
-      $("#quizList").innerHTML = '<div class="chapter-note">课程选择已变化，请重新刷新测验。</div>';
+      $("#quizList").innerHTML = '<div class="chapter-note">课程选择已变化，正在按新选择重新扫描…</div>';
+      if (state.selected.size) {
+        window.setTimeout(() => {
+          if (!state.quizScanning && state.selected.size) loadQuizzes();
+        }, 250);
+      }
       return;
     }
     state.quizLoaded = true;
@@ -597,6 +607,7 @@ function persistExamAnswers() {
   try {
     localStorage.setItem(EXAM_STORAGE_KEY, JSON.stringify({
       exam_id: state.examPaper.exam_id,
+      attempt_id: state.examPaper.attempt_id || "",
       fetched_at: state.examPaper.fetched_at,
       answers: state.examAnswers,
       cleared: [...state.examCleared],
@@ -609,8 +620,8 @@ function persistExamAnswers() {
 function restoreExamAnswers(paper) {
   try {
     const saved = JSON.parse(localStorage.getItem(EXAM_STORAGE_KEY) || "null");
+    // 服务端重启会重建试卷并生成新 attempt_id；同一场考试仍应恢复本地未暂存答案。
     if (saved && saved.exam_id === paper.exam_id
-        && Number(saved.fetched_at) === Number(paper.fetched_at)
         && saved.answers && typeof saved.answers === "object") {
       state.examAnswers = saved.answers;
       state.examCleared = new Set(Array.isArray(saved.cleared) ? saved.cleared : []);
@@ -636,12 +647,17 @@ async function loadExams(force = false) {
     host.innerHTML = '<div class="chapter-note">先在「刷课」页勾选课程，再回到这里刷新考试。</div>';
     return;
   }
+  const token = ++state.examLoadToken;
+  const selectionKey = quizSelectionKeyString();
   const button = $("#examRefresh");
   button.disabled = true;
   host.innerHTML = '<div class="chapter-note">正在读取考试…</div>';
   try {
     const indices = [...state.selected].join(",");
     const data = await api(`/api/exams?indices=${indices}&refresh=${force ? 1 : 0}`);
+    if (token !== state.examLoadToken || selectionKey !== quizSelectionKeyString()) {
+      return;
+    }
     state.exams = data.exams || [];
     state.examLoaded = true;
     renderExamList();
@@ -654,7 +670,7 @@ async function loadExams(force = false) {
     if (error.status !== 401) toast(error.message, "error");
     host.innerHTML = '<div class="chapter-note">读取失败，点右上角「刷新考试」重试。</div>';
   } finally {
-    button.disabled = false;
+    if (token === state.examLoadToken) button.disabled = false;
   }
 }
 
@@ -693,7 +709,8 @@ function renderExamList() {
     action.className = "btn tiny ghost quiz-solve";
     const active = state.examPaper && state.examPaper.exam_id === item.exam_id;
     action.textContent = item.completed ? "已完成" : active ? "继续" : "开始";
-    action.disabled = item.completed || Boolean(state.examPaper && !active);
+    action.disabled = item.completed || state.examStarting
+      || Boolean(state.examPaper && !active);
     action.title = item.completed
       ? "该考试已完成"
       : state.examPaper && !active
@@ -716,15 +733,19 @@ function renderExamList() {
 }
 
 async function openExam(item) {
-  if (state.examPaper) {
+  if (state.examPaper || state.examStarting) {
     toast("请先完成当前考试", "warn");
     return;
   }
+  const generation = state.authGeneration;
+  state.examStarting = true;
+  renderExamList();
   try {
     const cover = await api(
       `/api/exam/cover?course_index=${item.course_index}` +
       `&exam_id=${encodeURIComponent(item.exam_id)}`
     );
+    if (generation !== state.authGeneration) return;
     if (cover.completed) {
       toast(cover.message || "该考试已完成", "warn");
       state.examLoaded = false;
@@ -745,6 +766,7 @@ async function openExam(item) {
       code = input.trim();
       if (!code) return toast("未填写考试码", "warn");
     }
+    if (generation !== state.authGeneration) return;
     const title = cover.title || item.title;
     if (!window.confirm(`打开「${title}」会立即开始计时，确定进入考试吗？`)) return;
     const data = await api("/api/exam/start", postJson({
@@ -752,9 +774,13 @@ async function openExam(item) {
       exam_id: item.exam_id,
       code,
     }));
+    if (generation !== state.authGeneration) return;
     startExamRunner(data.paper, item);
   } catch (error) {
     if (error.status !== 401) toast(error.message, "error");
+  } finally {
+    state.examStarting = false;
+    renderExamList();
   }
 }
 
@@ -780,14 +806,17 @@ function startExamRunner(paper, item) {
     : "交卷前请确认所有题目；主观题按自己的理解作答。";
   $("#examActiveTimer").textContent = "--:--";
   $("#examActiveTimer").classList.remove("danger");
-  state.examDeadline = paper.remain_time > 0
-    ? paper.fetched_at * 1000 + paper.remain_time * 1000
-    : 0;
+  state.examDeadline = Number(paper.deadline) > 0
+    ? Number(paper.deadline) * 1000
+    : paper.remain_time > 0
+      ? paper.fetched_at * 1000 + paper.remain_time * 1000
+      : 0;
   persistExamAnswers();
-  startExamTimer();
+  // 必须先渲染题目，计时器归零时才不会从空 DOM 覆盖恢复的答案。
   renderExamQuestion();
   renderExamSheet();
   renderExamList();
+  startExamTimer();
   $("#examRunner").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -956,7 +985,13 @@ function renderExamQuestion() {
     area.placeholder = "输入答案…";
     area.value = String(current || "");
     area.addEventListener("input", () => {
-      state.examAnswers[question.id] = area.value;
+      const next = area.value;
+      if (!hasExamAnswer(next) && state.examSavedIds.has(question.id)) {
+        state.examCleared.add(question.id);
+      } else if (hasExamAnswer(next)) {
+        state.examCleared.delete(question.id);
+      }
+      state.examAnswers[question.id] = next;
       persistExamAnswers();
       renderExamSheet();
       updateExamProgress();
@@ -1078,7 +1113,7 @@ async function aiFillExamQuestion() {
 async function submitExam(force = false) {
   const paper = state.examPaper;
   if (!paper || state.examSubmitting) return;
-  syncExamAnswer();
+  if (!force) syncExamAnswer();
   const button = $("#examSubmit");
   const missing = paper.questions.filter((question) => !hasExamAnswer(state.examAnswers[question.id])).length;
   if (!force && button.dataset.confirm !== "1") {
@@ -1111,7 +1146,7 @@ async function submitExam(force = false) {
       await api("/api/exam/answer", postJson({
         exam_id: paper.exam_id,
         question_id: question.id,
-        answer,
+        answer: answer ?? "",
       }));
       state.examSavedIds.add(question.id);
     }
@@ -1320,6 +1355,7 @@ function handleAuthLost() {
   quizSince = 0;
   state.running = false;
   state.user = "";
+  state.authGeneration += 1;
   state.courses = [];
   state.selected.clear();
   state.chapterCache.clear();
@@ -1331,6 +1367,7 @@ function handleAuthLost() {
   state.quizLoaded = false;
   state.quizScanning = false;
   state.quizSelectionKey = "";
+  state.examLoadToken += 1;
   quizScanSince = 0;
   state.courseGeneration += 1;
   state.stats = { done: 0, failed: 0 };
@@ -1457,6 +1494,7 @@ async function init() {
   try {
     const session = await api("/api/session");
     if (session.logged_in) {
+      state.authGeneration += 1;
       state.user = session.name;
       await enterApp(false);
       await loadCourses({ animate: true });
@@ -1615,6 +1653,7 @@ async function submitLogin(event) {
   setLoginBusy(true);
   try {
     const data = await api("/api/login", postJson(payload));
+    state.authGeneration += 1;
     state.user = data.name || payload.username || "已登录";
     toast(`登录成功，欢迎 ${state.user}`, "ok");
     await enterApp(true);
@@ -1677,6 +1716,7 @@ async function pollQr() {
         : "已扫描，请在手机上点击确认";
     } else if (data.state === "confirmed") {
       state.qrActive = false;
+      state.authGeneration += 1;
       state.user = data.name || "已登录";
       toast(`扫码登录成功，欢迎 ${state.user}`, "ok");
       await enterApp(true);
@@ -1836,6 +1876,7 @@ function toggleCard(card, selected) {
   if (changed) {
     state.quizLoaded = false;
     state.examLoaded = false;
+    state.examLoadToken += 1;
   }
   card.classList.toggle("selected", selected);
   card.setAttribute("aria-checked", String(selected));
@@ -2398,7 +2439,7 @@ function bindUi() {
   $("#examPrev").addEventListener("click", () => examStep(-1));
   $("#examNext").addEventListener("click", () => examStep(1));
   $("#examAi").addEventListener("click", aiFillExamQuestion);
-  $("#examSubmit").addEventListener("click", submitExam);
+  $("#examSubmit").addEventListener("click", () => submitExam(false));
   $$("[data-theme-choice]").forEach((button) => {
     button.addEventListener("click", () => updateThemeChoice(button.dataset.themeChoice));
   });
