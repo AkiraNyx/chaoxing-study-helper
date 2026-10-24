@@ -35,6 +35,7 @@ const state = {
   courseGeneration: 0,
   quizLoaded: false,
   quizScanning: false,
+  quizSelectionKey: "",
   exams: [],
   examLoaded: false,
   examFilter: "all",
@@ -167,16 +168,22 @@ function applyQuizFilter() {
 
 let quizScanSince = 0;
 
+function quizSelectionKeyString() {
+  return [...state.selected].sort((a, b) => a - b).join(",");
+}
+
 async function loadQuizzes(force = false) {
   const host = $("#quizList");
   if (state.quizScanning) return;
   if (!state.selected.size) {
     state.quizLoaded = false;
+    state.quizSelectionKey = "";
     $("#quizScan").hidden = true;
     host.hidden = false;
     host.innerHTML = '<div class="chapter-note">先在「刷课」页勾选课程，再回到这里刷新测验。</div>';
     return;
   }
+  state.quizSelectionKey = quizSelectionKeyString();
   $("#quizScan").hidden = false;
   host.hidden = true;
   $("#quizConsole").innerHTML = '<div class="console-empty" id="quizConsoleEmpty">等待扫描日志…</div>';
@@ -225,6 +232,11 @@ async function pollQuizScan() {
     $("#quizList").hidden = false;
     const result = data.result || {};
     state.quizScanning = false;
+    if (!state.selected.size || quizSelectionKeyString() !== state.quizSelectionKey) {
+      state.quizLoaded = false;
+      $("#quizList").innerHTML = '<div class="chapter-note">课程选择已变化，请重新刷新测验。</div>';
+      return;
+    }
     state.quizLoaded = true;
     renderQuizList(result.quizzes || []);
     updateOverallProgress();
@@ -1318,6 +1330,7 @@ function handleAuthLost() {
   state.quizItems = [];
   state.quizLoaded = false;
   state.quizScanning = false;
+  state.quizSelectionKey = "";
   quizScanSince = 0;
   state.courseGeneration += 1;
   state.stats = { done: 0, failed: 0 };
@@ -1710,6 +1723,7 @@ async function loadCourses({ animate: animateIn } = {}) {
     state.chapterDone.clear();
     state.chapterTotal.clear();
     state.quizLoaded = false;
+    state.quizSelectionKey = "";
     state.exams = [];
     state.examLoaded = false;
     state.courseGeneration += 1;
@@ -1816,8 +1830,13 @@ function buildCourseCard(course, index) {
 
 function toggleCard(card, selected) {
   const index = Number(card.dataset.index);
+  const changed = selected ? !state.selected.has(index) : state.selected.has(index);
   if (selected) state.selected.add(index);
   else state.selected.delete(index);
+  if (changed) {
+    state.quizLoaded = false;
+    state.examLoaded = false;
+  }
   card.classList.toggle("selected", selected);
   card.setAttribute("aria-checked", String(selected));
 
