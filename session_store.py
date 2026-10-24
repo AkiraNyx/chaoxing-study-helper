@@ -92,8 +92,8 @@ def save(cookie: str) -> bool:
 
 
 def load() -> str | None:
-    path = _path()
     try:
+        path = _path()
         with open(path, "rb") as handle:
             encrypted = handle.read()
         payload = json.loads(_unprotect(encrypted).decode("utf-8"))
@@ -104,8 +104,8 @@ def load() -> str | None:
 
 
 def clear() -> None:
-    path = _path()
     try:
+        path = _path()
         os.remove(path)
     except OSError:
         pass

@@ -16,7 +16,7 @@
   <a href="https://github.com/AkiraNyx/chaoxing-study-helper/releases"><img alt="Release" src="https://img.shields.io/github/v/release/AkiraNyx/chaoxing-study-helper?style=for-the-badge&color=D97757"></a>
   <a href="https://github.com/AkiraNyx/chaoxing-study-helper"><img alt="GitHub" src="https://img.shields.io/github/stars/AkiraNyx/chaoxing-study-helper?style=for-the-badge&color=1F1E1D"></a>
   <img alt="Windows" src="https://img.shields.io/badge/WINDOWS-10%2F11-1F1E1D?style=for-the-badge&logo=windows&logoColor=F0EEE6">
-  <img alt="Single File" src="https://img.shields.io/badge/SINGLE_FILE-19_MB-6B675F?style=for-the-badge">
+  <img alt="Single File" src="https://img.shields.io/badge/SINGLE_FILE-35_MB-6B675F?style=for-the-badge">
 </p>
 
 <details>
@@ -30,6 +30,7 @@
 - [三种进门方式](#三种进门方式)
 - [刷课是怎么刷的](#刷课是怎么刷的)
 - [做题是怎么做的](#做题是怎么做的)
+- [考试是怎么做的](#考试是怎么做的)
 - [AI 接口](#ai-接口)
 - [长什么样](#长什么样)
 - [已知边界](#已知边界)
@@ -60,6 +61,7 @@
 | 课程列表 | 搜索、多选、每门课显示「X 章 · Y 节 · 任务点 n/m」 |
 | 自动刷课 | 视频、文档、阅读；倍速 1.0×–3.0×，实时日志和两位小数进度 |
 | 独立做题块 | 扫描章节测验、搜索、按完成状态筛选、逐题作答 |
+| 课程考试 | 读取考试列表、答题卡跳题、手动/AI 作答、逐题暂存后交卷 |
 | AI 填题 | 配好 DeepSeek / OpenAI 兼容接口，单选、多选、判断、填空都能填 |
 | 成绩回顾 | 做完的测验保留「回顾」，能看题目和得分 |
 | 字体解密 | 学习通把题目换成加密字体时，自动按字形映射还原 |
@@ -102,6 +104,7 @@ flowchart LR
 | 登录 | 🟢 可用 | 扫码 / 密码 / Cookie 三条路 |
 | 刷课 | 🟢 可用 | 视频、文档、阅读；倍速与进度上报 |
 | 做题扫描 | 🟡 看网络 | 首次要逐条打开测验页，之后读缓存 |
+| 课程考试 | 🟡 部分实测 | 真实账号已读到考试列表与封面；开始/交卷待在可用考试上验证 |
 | AI 填题 | 🟢 可用 | 需要自己配 Key；模型名以接口为准 |
 | 字体解密 | 🟢 可用 | 生僻字形仍可能漏 |
 | 连接诊断 | 🟢 可用 | 会真的打开一条测验页做检查 |
@@ -114,9 +117,10 @@ flowchart LR
 2. 扫码，或用账号密码 / Cookie 登录
 3. 在「刷课」勾选课程 → 调倍速 → 点「开始刷课」
 4. 想做题就切到「做题」→「刷新测验」→ 点「作答」
-5. 卡住了就点右上角「诊断」，它会告诉你哪一层断了
+5. 想考试就切到「考试」→「刷新考试」→「开始」（会立即开始计时）
+6. 卡住了就点右上角「诊断」，它会告诉你哪一层断了
 
-> 不想拉整个仓库？直接去 [Releases](https://github.com/AkiraNyx/chaoxing-study-helper/releases) 下载 `chaoxing-study-helper-v1.0.6.exe`。
+> 不想拉整个仓库？直接去 [Releases](https://github.com/AkiraNyx/chaoxing-study-helper/releases) 下载 `chaoxing-study-helper-v1.1.1.exe`。
 
 > 首次启动会解包到临时目录，慢一两秒是正常的。SmartScreen 拦截就点「更多信息 → 仍要运行」。
 
@@ -149,6 +153,18 @@ Cookie 默认只在内存里；勾选「记住登录状态」后，会用 Window
 
 首次扫描要额外打开每条测验页，会慢一点；结果缓存 5 分钟，刷新按钮强制重扫。
 
+## 考试是怎么做的
+
+1. 在「考试」页点「刷新考试」，按勾选课程读取考试列表
+2. 点「开始」会先读考试封面：已完成、需要人脸/人机验证、需要考试码都会提前提示
+3. 确认进入后才开始计时，整卷题目一次拉取，右侧答题卡可以跳题
+4. 可以手动作答，也可以点「AI 填这题」
+5. 翻题/交卷会自动暂存；手动交卷要点两次确认，倒计时归零会自动交卷
+
+只覆盖普通课程考试。人脸识别、人机验证、只允许 PC 客户端的考试，以及连线/排序/资料题等特殊题型，仍需要在学习通客户端完成。
+
+如果封面提示「章节任务点未完成 100%」，先把「刷课」跑完，再回来刷新考试。
+
 ## AI 接口
 
 在「AI 接口」页填：
@@ -159,6 +175,8 @@ Cookie 默认只在内存里；勾选「记住登录状态」后，会用 Window
 - 推理等级：默认 / 低 / 中 / 高，对应 `reasoning_effort`
 
 模型名不是官方固定列表，中转站叫什么就填什么；填错会由接口自己报错，工具不猜。
+
+API Key 以明文保存在本机的 `%APPDATA%\学习通刷课\config.json`，只在本机使用；不要把这份配置发给别人。
 
 ## 长什么样
 
@@ -179,6 +197,7 @@ Cookie 默认只在内存里；勾选「记住登录状态」后，会用 Window
 - **测验页改版**：提交字段和 DOM 可能变；真实环境第一次用，建议先拿一道不重要的测验试
 - **字体映射缺口**：生僻字形可能没覆盖，会显示个别乱码
 - **已完成测验**：只能回顾，不能重复提交
+- **考试限制**：人脸识别、人机验证、PC 客户端限制与特殊题型无法自动处理；交卷前请自行检查答案
 
 ## 目录
 
@@ -189,7 +208,7 @@ Cookie 默认只在内存里；勾选「记住登录状态」后，会用 Window
 ├─ docs/                   截图与文件清单（FILES.md）
 ├─ tests/                  模拟学习通 + 端到端测试
 ├─ server.py               本地服务 / API
-├─ chaoxing.py             学习通客户端 / 刷课执行器
+├─ chaoxing.py             学习通客户端 / 刷课与考试
 ├─ ai_client.py            AI 客户端
 ├─ font_decoder.py         字体解密
 ├─ session_store.py        DPAPI 加密登录会话
@@ -212,10 +231,20 @@ python tests/test_server_api.py
 # 扫码状态机
 python tests/test_qr_login.py
 
+# 测验保存/提交语义、会话失效清理、请求来源校验
+python tests/test_quiz_api.py
+
+# 考试列表 / 封面 / 开始 / 逐题暂存 / 交卷
+python tests/test_exam.py
+
+# 本地考试演示（不连学习通）
+python demo_exam.py
+
 # 自检
 python server.py --selftest
 
-# 重新打包
+# 安装打包依赖后重新打包
+python -m pip install -r requirements-build.txt
 python build_exe.py
 ```
 
@@ -234,7 +263,7 @@ python build_exe.py
 多半带弹题或人脸。去网页手动过这一节，再回来刷剩下的。
 
 **端口被占用？**  
-软件固定用本地 8765。关掉占用端口的程序，或退出另一个已经开着的实例。
+软件优先使用本地 8765；被占用时会自动顺延到 8765–8784。关掉占用端口的程序，或退出另一个已经开着的实例。
 
 **做完的测验还显示待作答？**  
 打开一次让它读到测验页标记，再刷新列表；还不对就点「诊断」看测验页读取那一项。
@@ -278,7 +307,7 @@ by the Free Software Foundation, either version 3 of the License, or
 - 如果把它做成网络服务给别人用，也要向使用者提供对应源码
 - 不提供任何担保
 
-第三方资源（anime.js、Lucide 与内置字体）仍归各自许可证所有，不在本项目 AGPL 覆盖范围内；再分发时请一并遵守它们的条款。
+第三方资源（anime.js、Lucide、内置字体，以及来自 nekro_chaoxing_study 的 `font_map_table.json`）仍归各自许可证所有，不在本项目 AGPL 覆盖范围内；再分发时请一并遵守它们的条款。
 
 ## 最后
 

@@ -6,15 +6,15 @@
 
 | 文件 | 作用 |
 | --- | --- |
-| `dist/学习通刷课.exe` | 最终单文件桌面版（PyInstaller onefile + WebView2，约 19 MB） |
+| `dist/学习通刷课.exe` | 最终单文件桌面版（PyInstaller onefile + WebView2，约 35 MB） |
 | `desktop.py` | 桌面窗口入口：pywebview、frameless、窗口居中、单实例互斥 |
-| `server.py` | 本地 HTTP 服务与全部 JSON API（登录、刷课、做题、扫描、AI、诊断） |
+| `server.py` | 本地 HTTP 服务与全部 JSON API（登录、刷课、做题、考试、扫描、AI、诊断） |
 
 ## 业务模块
 
 | 文件 | 作用 |
 | --- | --- |
-| `chaoxing.py` | 学习通客户端：登录、课程、章节、任务点、视频上报、测验读取/提交 |
+| `chaoxing.py` | 学习通客户端：登录、课程、章节、任务点、视频上报、测验与课程考试读取/提交 |
 | `ai_client.py` | OpenAI 兼容 AI 客户端：`chat`、`test`、`list_models`，支持 `reasoning_effort` |
 | `font_decoder.py` | 测验页字体加密解码：抽取 base64 字体、字形哈希、映射回真字 |
 | `session_store.py` | Windows DPAPI 加密的 Cookie 会话存储 |
@@ -25,9 +25,9 @@
 
 | 路径 | 作用 |
 | --- | --- |
-| `web/index.html` | 单页结构：登录、刷课、做题、AI 接口、设置、关于 |
+| `web/index.html` | 单页结构：登录、刷课、做题、考试、AI 接口、设置、关于 |
 | `web/style.css` | 暖纸色浅色/深色主题、组件、动效 |
-| `web/app.js` | 页面状态、API 调用、进度/日志、答题卡、anime.js 动效 |
+| `web/app.js` | 页面状态、API 调用、进度/日志、答题卡、考试计时、anime.js 动效 |
 | `web/vendor/` | anime.js v4、Lucide 图标 |
 | `web/fonts/` | 内置英文 Sans/Serif/Mono + MiSans 子集 |
 | `web/favicon.svg` | 页面图标 |
@@ -37,16 +37,20 @@
 | 文件 | 作用 |
 | --- | --- |
 | `build_exe.py` | 重新打包 exe；包含 `web/`、`icon.ico`、`font_map_table.json` |
+| `requirements-build.txt` | 打包依赖版本（pywebview / PyInstaller / fontTools） |
+| `demo_exam.py` | 本地考试演示：假数据、不连学习通 |
 | `icon.ico` | 窗口 / exe 图标 |
 
 ## 测试与文档
 
 | 路径 | 作用 |
 | --- | --- |
-| `tests/mock_chaoxing.py` | 本地模拟学习通服务（登录、课程、章节、视频、文档、测验） |
+| `tests/mock_chaoxing.py` | 本地模拟学习通服务（登录、课程、章节、视频、文档、测验、考试） |
 | `tests/test_pipeline.py` | 刷课端到端：完成数、跳过数、进度、enc 校验 |
 | `tests/test_server_api.py` | HTTP API 刷课链路 |
 | `tests/test_qr_login.py` | 扫码状态机 |
+| `tests/test_quiz_api.py` | 测验保存/提交语义、401 清理、POST 来源校验 |
+| `tests/test_exam.py` | 考试列表、封面、开始、逐题暂存、finalize 交卷 |
 | `docs/*.png` | 界面截图（部分为早期版本，以实际界面为准） |
 | `docs/hero.webp` | README 头图（项目横幅，HTML 渲染） |
 | `docs/mascot.webp` | Q 版鲸鱼娘，文档吉祥物（CC BY-NC-SA 4.0） |

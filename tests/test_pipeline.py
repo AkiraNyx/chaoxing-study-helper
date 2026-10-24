@@ -24,6 +24,10 @@ def main() -> None:
         client.login_with_password("test-user", "test-pass")
         assert client.uid == "123", client.uid
         assert client.name == "测试同学", client.name
+        assert client._study_ok(200, '{"status": true}')
+        assert not client._study_ok(200, '{"status": false}')
+        assert not client._study_ok(200, "<html>用户登录</html>")
+        assert not client._study_ok(403, "")
 
         courses = client.get_courses()
         assert len(courses) == 1, courses

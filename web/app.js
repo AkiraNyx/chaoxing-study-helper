@@ -5,6 +5,7 @@ const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selec
 const prefersReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const PREF_KEY = "chaoxing-helper-prefs-v1";
 const THEME_KEY = "cx-theme";
+const EXAM_STORAGE_KEY = "cx-exam-session-v1";
 
 const state = {
   courses: [],
@@ -33,6 +34,19 @@ const state = {
   chapterTotal: new Map(),
   courseGeneration: 0,
   quizLoaded: false,
+  exams: [],
+  examLoaded: false,
+  examFilter: "all",
+  examQuery: "",
+  examPaper: null,
+  examAnswers: {},
+  examIndex: 0,
+  examDeadline: 0,
+  examTimer: null,
+  examSubmitting: false,
+  examSavedIds: new Set(),
+  examCleared: new Set(),
+  examUnsupported: 0,
 };
 
 const ICONS = { ok: "check", warn: "triangle-alert", error: "x", info: "info" };
@@ -85,11 +99,12 @@ function setView(name) {
   $$(".side-item").forEach((button) => {
     button.classList.toggle("active", button.dataset.view === name);
   });
-  ["brush", "quiz", "ai", "settings", "about"].forEach((view) => {
+  ["brush", "quiz", "exam", "ai", "settings", "about"].forEach((view) => {
     const section = $(`#view-${view}`);
     if (section) section.hidden = view !== name;
   });
   if (name === "quiz" && !state.quizLoaded) loadQuizzes();
+  if (name === "exam" && !state.examLoaded) loadExams();
   if (name === "settings") loadAutoLogin();
 }
 
@@ -260,7 +275,9 @@ async function pollQuiz() {
       const summary = data.summary || {};
       const message = summary.submitted
         ? `测验已提交 ${summary.count || 0} 题` + (summary.missing ? `，${summary.missing} 题未答` : "")
-        : `作答失败：${summary.message || "未知错误"}`;
+        : summary.saved
+          ? `已暂存 ${summary.count || 0} 题，${summary.missing || 0} 题未答，未交卷`
+          : `作答失败：${summary.message || "未知错误"}`;
       toast(message, summary.submitted ? "ok" : "warn");
       state.quizLoaded = false;
       loadQuizzes(true);
@@ -516,15 +533,16 @@ async function submitQuizView() {
       jobid: item.jobid,
       answers: quizView.answers,
     }));
-    const saved = !data.submitted && data.missing > 0;
-    const resultText = data.submitted
+    const submitted = Boolean(data.submitted);
+    const saved = Boolean(data.saved);
+    const resultText = submitted
       ? `已提交 ${data.count} 题${data.missing ? `，${data.missing} 题未答` : ""}`
       : saved
-        ? `已保存：${data.message || "未提交"}`
+        ? `已暂存 ${data.count - (data.missing || 0)} 题，还有 ${data.missing || 0} 题未答（未交卷）`
         : `提交失败：${data.message || "未知错误"}`;
-    quizLog(data.submitted ? "ok" : (saved ? "warn" : "error"), resultText);
-    toast(resultText, data.submitted ? "ok" : "warn");
-    if (data.submitted) {
+    quizLog(submitted ? "ok" : saved ? "warn" : "error", resultText);
+    toast(resultText, submitted ? "ok" : "warn");
+    if (submitted) {
       markQuizPassed(item.jobid);
       state.quizLoaded = true;
     }
@@ -537,27 +555,574 @@ async function submitQuizView() {
   }
 }
 
-async function solveQuiz(quiz, button) {
-  if (quizWasRunning) return;
-  button.disabled = true;
-  button.textContent = "作答中…";
+/* ------------------------------------------------------------------ 考试 */
+function hasExamAnswer(value) {
+  if (Array.isArray(value)) return value.some((item) => String(item ?? "").trim());
+  return Boolean(String(value ?? "").trim());
+}
+
+function examQuestion() {
+  return state.examPaper ? state.examPaper.questions[state.examIndex] : null;
+}
+
+function persistExamAnswers() {
+  if (!state.examPaper) return;
   try {
-    await api("/api/quiz/solve", postJson({
-      course_index: quiz.course_index,
-      point_id: quiz.point_id,
-      jobid: quiz.jobid,
+    localStorage.setItem(EXAM_STORAGE_KEY, JSON.stringify({
+      exam_id: state.examPaper.exam_id,
+      fetched_at: state.examPaper.fetched_at,
+      answers: state.examAnswers,
+      cleared: [...state.examCleared],
     }));
-    const host = $("#quizConsole");
-    host.innerHTML = '<div class="console-empty" id="quizConsoleEmpty">等待日志…</div>';
-    quizSince = 0;
-    quizWasRunning = true;
-    setQuizProgress(0, "准备");
-    window.clearTimeout(quizPollTimer);
-    pollQuiz();
+  } catch {
+    /* 隐私模式下忽略 */
+  }
+}
+
+function restoreExamAnswers(paper) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(EXAM_STORAGE_KEY) || "null");
+    if (saved && saved.exam_id === paper.exam_id
+        && Number(saved.fetched_at) === Number(paper.fetched_at)
+        && saved.answers && typeof saved.answers === "object") {
+      state.examAnswers = saved.answers;
+      state.examCleared = new Set(Array.isArray(saved.cleared) ? saved.cleared : []);
+    }
+  } catch {
+    /* 忽略损坏的本地快照 */
+  }
+}
+
+function clearExamAnswers() {
+  try {
+    localStorage.removeItem(EXAM_STORAGE_KEY);
+  } catch {
+    /* 忽略 */
+  }
+}
+
+async function loadExams(force = false) {
+  const host = $("#examList");
+  if (!state.selected.size) {
+    state.examLoaded = false;
+    state.exams = [];
+    host.innerHTML = '<div class="chapter-note">先在「刷课」页勾选课程，再回到这里刷新考试。</div>';
+    return;
+  }
+  const button = $("#examRefresh");
+  button.disabled = true;
+  host.innerHTML = '<div class="chapter-note">正在读取考试…</div>';
+  try {
+    const indices = [...state.selected].join(",");
+    const data = await api(`/api/exams?indices=${indices}&refresh=${force ? 1 : 0}`);
+    state.exams = data.exams || [];
+    state.examLoaded = true;
+    renderExamList();
+    if ((data.errors || []).length) {
+      toast(data.errors.join("；"), "warn");
+    } else if (force) {
+      toast(`已读取 ${state.exams.length} 场考试`, "ok");
+    }
   } catch (error) {
-    toast(error.message, "error");
+    if (error.status !== 401) toast(error.message, "error");
+    host.innerHTML = '<div class="chapter-note">读取失败，点右上角「刷新考试」重试。</div>';
+  } finally {
     button.disabled = false;
-    button.textContent = "AI 作答";
+  }
+}
+
+function renderExamList() {
+  const host = $("#examList");
+  host.innerHTML = "";
+  const query = state.examQuery.toLowerCase();
+  const items = state.exams.filter((item) => {
+    if (state.examFilter === "pending" && item.completed) return false;
+    if (state.examFilter === "done" && !item.completed) return false;
+    return !query || `${item.course} ${item.title}`.toLowerCase().includes(query);
+  });
+  if (!items.length) {
+    const note = document.createElement("div");
+    note.className = "chapter-note";
+    note.textContent = state.exams.length ? "没有匹配的考试" : "没有读取到课程考试";
+    host.appendChild(note);
+    return;
+  }
+  items.forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "chapter-item exam-item" + (item.completed ? " finished" : "");
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = `${item.course} · ${item.title}`;
+    const expire = document.createElement("span");
+    expire.className = "exam-expire";
+    expire.textContent = item.expire || "";
+    const pill = document.createElement("span");
+    pill.className = "pill";
+    pill.textContent = item.status || (item.completed ? "已完成" : "未交");
+    const action = document.createElement("button");
+    action.type = "button";
+    action.className = "btn tiny ghost quiz-solve";
+    const active = state.examPaper && state.examPaper.exam_id === item.exam_id;
+    action.textContent = item.completed ? "已完成" : active ? "继续" : "开始";
+    action.disabled = item.completed || Boolean(state.examPaper && !active);
+    action.title = item.completed
+      ? "该考试已完成"
+      : state.examPaper && !active
+        ? "请先完成当前考试"
+        : "";
+    action.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (item.completed) return;
+      if (state.examPaper) {
+        if (state.examPaper.exam_id === item.exam_id) resumeExamRunner();
+        else toast("请先完成当前考试", "warn");
+        return;
+      }
+      openExam(item);
+    });
+    row.append(dot, name, expire, pill, action);
+    host.appendChild(row);
+  });
+  renderIcons();
+}
+
+async function openExam(item) {
+  if (state.examPaper) {
+    toast("请先完成当前考试", "warn");
+    return;
+  }
+  try {
+    const cover = await api(
+      `/api/exam/cover?course_index=${item.course_index}` +
+      `&exam_id=${encodeURIComponent(item.exam_id)}`
+    );
+    if (cover.completed) {
+      toast(cover.message || "该考试已完成", "warn");
+      state.examLoaded = false;
+      return;
+    }
+    if (cover.need_face) {
+      toast("该考试要求人脸识别，本地无法处理，请用学习通客户端完成", "warn");
+      return;
+    }
+    if (cover.need_captcha) {
+      toast("该考试要求人机验证码，本地无法处理，请用学习通客户端完成", "warn");
+      return;
+    }
+    let code = "";
+    if (cover.need_code) {
+      const input = window.prompt("该考试需要考试码，请输入：", "");
+      if (input === null) return;
+      code = input.trim();
+      if (!code) return toast("未填写考试码", "warn");
+    }
+    const title = cover.title || item.title;
+    if (!window.confirm(`打开「${title}」会立即开始计时，确定进入考试吗？`)) return;
+    const data = await api("/api/exam/start", postJson({
+      course_index: item.course_index,
+      exam_id: item.exam_id,
+      code,
+    }));
+    startExamRunner(data.paper, item);
+  } catch (error) {
+    if (error.status !== 401) toast(error.message, "error");
+  }
+}
+
+function startExamRunner(paper, item) {
+  state.examPaper = paper;
+  state.examAnswers = {};
+  state.examCleared = new Set();
+  restoreExamAnswers(paper);
+  state.examSavedIds = new Set(paper.saved || []);
+  state.examUnsupported = paper.questions.filter(
+    (question) => !["0", "1", "2", "3", "4"].includes(String(question.type_code))
+  ).length;
+  state.examIndex = 0;
+  state.examSubmitting = false;
+  $("#examRunner").hidden = false;
+  $("#examActive").hidden = true;
+  $("#examTitle").textContent = paper.title;
+  $("#examMeta").textContent = `${item.course} · 共 ${paper.questions.length} 题`;
+  $("#examSubmit").disabled = false;
+  $("#examSubmit").textContent = "交卷";
+  $("#examHint").textContent = state.examUnsupported
+    ? `注意：本卷有 ${state.examUnsupported} 道特殊题型（连线/排序/资料题等），可能需要学习通客户端完成。`
+    : "交卷前请确认所有题目；主观题按自己的理解作答。";
+  $("#examActiveTimer").textContent = "--:--";
+  $("#examActiveTimer").classList.remove("danger");
+  state.examDeadline = paper.remain_time > 0
+    ? paper.fetched_at * 1000 + paper.remain_time * 1000
+    : 0;
+  persistExamAnswers();
+  startExamTimer();
+  renderExamQuestion();
+  renderExamSheet();
+  renderExamList();
+  $("#examRunner").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function resumeExamRunner() {
+  if (!state.examPaper) return;
+  $("#examRunner").hidden = false;
+  $("#examActive").hidden = true;
+  renderExamQuestion();
+  renderExamSheet();
+  $("#examRunner").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function closeExamRunner() {
+  if (!state.examPaper) return;
+  syncExamAnswer();
+  persistExamAnswers();
+  const current = examQuestion();
+  if (current) saveExamAnswer(current);
+  $("#examRunner").hidden = true;
+  $("#examActive").hidden = false;
+  $("#examActiveName").textContent = state.examPaper.title;
+  renderExamList();
+}
+
+function startExamTimer() {
+  stopExamTimer();
+  const tick = () => {
+    const timer = $("#examTimer");
+    const activeTimer = $("#examActiveTimer");
+    const setText = (text, danger = false) => {
+      timer.textContent = text;
+      if (activeTimer) activeTimer.textContent = text;
+      timer.classList.toggle("danger", danger);
+      if (activeTimer) activeTimer.classList.toggle("danger", danger);
+    };
+    if (!state.examPaper) return;
+    if (!state.examDeadline) {
+      setText("不限时");
+      return;
+    }
+    const left = Math.max(0, Math.round((state.examDeadline - Date.now()) / 1000));
+    const minutes = Math.floor(left / 60);
+    const seconds = left % 60;
+    setText(
+      `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`,
+      left <= 300,
+    );
+    if (left <= 0) {
+      setText("时间到", true);
+      stopExamTimer();
+      if (!state.examSubmitting) {
+        toast("考试时间到，正在自动交卷…", "warn");
+        submitExam(true);
+      }
+    }
+  };
+  tick();
+  state.examTimer = window.setInterval(tick, 1000);
+}
+
+function stopExamTimer() {
+  if (state.examTimer) {
+    window.clearInterval(state.examTimer);
+    state.examTimer = null;
+  }
+}
+
+function syncExamAnswer() {
+  const question = examQuestion();
+  if (!question) return;
+  const host = $("#examQuestion");
+  let value = "";
+  if (question.type === "completion") {
+    const areas = [...host.querySelectorAll("textarea[data-blank]")];
+    const values = areas.map((area) => area.value);
+    value = values.some((item) => item.trim()) ? values : "";
+  } else if (question.type === "multiple") {
+    const checked = [...host.querySelectorAll("input:checked")].map((item) => item.value).sort();
+    value = checked.length ? checked.join("") : "";
+  } else if (question.type === "single" || question.type === "judgement") {
+    const checked = host.querySelector("input:checked");
+    value = checked ? checked.value : "";
+  } else {
+    const area = host.querySelector("textarea");
+    value = area ? area.value : "";
+  }
+  const previous = state.examAnswers[question.id];
+  if (hasExamAnswer(previous) && !hasExamAnswer(value)) {
+    state.examCleared.add(question.id);
+  } else if (hasExamAnswer(value)) {
+    state.examCleared.delete(question.id);
+  }
+  state.examAnswers[question.id] = value;
+  persistExamAnswers();
+}
+
+function renderExamQuestion() {
+  const paper = state.examPaper;
+  if (!paper) return;
+  const question = paper.questions[state.examIndex];
+  if (!question) return;
+  const total = paper.questions.length;
+  const labels = {
+    single: "单选题", multiple: "多选题", judgement: "判断题",
+    completion: "填空题", shortanswer: "简答 / 主观题",
+  };
+  $("#examIndex").textContent = `${state.examIndex + 1} / ${total}`;
+  $("#examBar").style.width = `${((state.examIndex + 1) / total) * 100}%`;
+  $("#examMeta").textContent = `${labels[question.type] || question.type} · 共 ${total} 题`;
+  const host = $("#examQuestion");
+  host.innerHTML = "";
+  const title = document.createElement("h4");
+  title.textContent = `${state.examIndex + 1}. ${question.title}`;
+  host.appendChild(title);
+  const current = state.examAnswers[question.id] ?? "";
+  const selected = (() => {
+    if (Array.isArray(current)) return [];
+    return String(current || "");
+  })();
+
+  const addOption = (value, text) => {
+    const label = document.createElement("label");
+    label.className = "quiz-option" + (selected.includes(value) ? " selected" : "");
+    const input = document.createElement("input");
+    input.type = question.type === "multiple" ? "checkbox" : "radio";
+    input.name = "examOption";
+    input.value = value;
+    input.checked = selected.includes(value);
+    input.addEventListener("change", () => {
+      syncExamAnswer();
+      renderExamQuestion();
+    });
+    const span = document.createElement("span");
+    span.textContent = text;
+    label.append(input, span);
+    host.appendChild(label);
+  };
+
+  if (question.type === "judgement") {
+    addOption("true", "正确");
+    addOption("false", "错误");
+  } else if (question.type === "completion") {
+    const values = Array.isArray(current) ? current : [current];
+    const blanks = question.blanks && question.blanks.length ? question.blanks : ["第1空"];
+    blanks.forEach((labelText, index) => {
+      const label = document.createElement("label");
+      label.className = "field exam-blank";
+      const span = document.createElement("span");
+      span.textContent = labelText || `第${index + 1}空`;
+      const area = document.createElement("textarea");
+      area.dataset.blank = String(index);
+      area.rows = 2;
+      area.value = values[index] || "";
+      area.placeholder = "填写答案…";
+      area.addEventListener("input", () => {
+        syncExamAnswer();
+        renderExamSheet();
+        updateExamProgress();
+      });
+      label.append(span, area);
+      host.appendChild(label);
+    });
+  } else if (question.type === "shortanswer" || !question.options.length) {
+    const area = document.createElement("textarea");
+    area.className = "quiz-textarea";
+    area.placeholder = "输入答案…";
+    area.value = String(current || "");
+    area.addEventListener("input", () => {
+      state.examAnswers[question.id] = area.value;
+      persistExamAnswers();
+      renderExamSheet();
+      updateExamProgress();
+    });
+    host.appendChild(area);
+  } else {
+    question.options.forEach((option) => addOption(option.key, option.text));
+  }
+  renderExamSheet();
+  updateExamProgress();
+}
+
+function renderExamSheet() {
+  const host = $("#examSheet");
+  const paper = state.examPaper;
+  host.innerHTML = "";
+  if (!paper) return;
+  paper.questions.forEach((question, index) => {
+    const cell = document.createElement("button");
+    cell.type = "button";
+    cell.className = "exam-sheet-cell";
+    if (index === state.examIndex) cell.classList.add("current");
+    if (hasExamAnswer(state.examAnswers[question.id])) cell.classList.add("answered");
+    cell.textContent = String(index + 1);
+    cell.addEventListener("click", async () => {
+      syncExamAnswer();
+      const current = examQuestion();
+      if (current) await saveExamAnswer(current);
+      state.examIndex = index;
+      renderExamQuestion();
+    });
+    host.appendChild(cell);
+  });
+  const answered = paper.questions.filter((question) => hasExamAnswer(state.examAnswers[question.id])).length;
+  $("#examAnswered").textContent = `${answered} / ${paper.questions.length}`;
+}
+
+function updateExamProgress() {
+  const paper = state.examPaper;
+  if (!paper) return;
+  const total = paper.questions.length || 1;
+  const answered = paper.questions.filter((question) => hasExamAnswer(state.examAnswers[question.id])).length;
+  const percent = (answered / total) * 100;
+  $("#examPct").textContent = `${percent.toFixed(2)}%`;
+  $("#examProgressBar").style.width = `${percent}%`;
+  $("#examPhase").textContent = "作答中";
+  $("#examCurrent").textContent = `已答 ${answered} / ${paper.questions.length} 题`;
+  $("#examRing").style.setProperty("--p", percent);
+  $("#examRingText").textContent = `${Math.round(percent)}%`;
+}
+
+async function saveExamAnswer(question) {
+  if (!state.examPaper || !question) return true;
+  const answer = state.examAnswers[question.id] ?? "";
+  const cleared = state.examCleared.has(question.id);
+  if (!hasExamAnswer(answer) && !cleared) return true;
+  try {
+    const data = await api("/api/exam/answer", postJson({
+      exam_id: state.examPaper.exam_id,
+      question_id: question.id,
+      answer,
+    }));
+    if (data.saved) state.examSavedIds.add(question.id);
+    if (Array.isArray(data.saved_ids)) {
+      state.examSavedIds = new Set(data.saved_ids);
+    }
+    return true;
+  } catch (error) {
+    if (error.status !== 401) {
+      toast(`第 ${state.examIndex + 1} 题暂存失败：${error.message}`, "warn");
+    }
+    return false;
+  }
+}
+
+async function examStep(delta) {
+  const paper = state.examPaper;
+  if (!paper) return;
+  syncExamAnswer();
+  const current = examQuestion();
+  if (current) await saveExamAnswer(current);
+  const next = state.examIndex + delta;
+  if (next < 0 || next >= paper.questions.length) return;
+  state.examIndex = next;
+  renderExamQuestion();
+}
+
+async function aiFillExamQuestion() {
+  const question = examQuestion();
+  if (!question || state.examSubmitting) return;
+  const button = $("#examAi");
+  button.disabled = true;
+  try {
+    const payload = {
+      id: question.id,
+      type: question.type,
+      title: question.title,
+      options: (question.options || []).map((option) => `${option.key}. ${option.text}`),
+    };
+    toast("AI 正在作答这一题…", "info");
+    const data = await api("/api/quiz/ai", postJson({ questions: [payload] }));
+    const answer = String(data.answers?.[question.id] ?? "");
+    if (question.type === "completion") {
+      const parts = answer.split(/[|\n]/).map((item) => item.trim()).filter(Boolean);
+      state.examAnswers[question.id] = parts.length ? parts : [answer];
+    } else {
+      state.examAnswers[question.id] = answer;
+    }
+    persistExamAnswers();
+    await saveExamAnswer(question);
+    renderExamQuestion();
+  } catch (error) {
+    if (error.status !== 401) toast(error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function submitExam(force = false) {
+  const paper = state.examPaper;
+  if (!paper || state.examSubmitting) return;
+  syncExamAnswer();
+  const button = $("#examSubmit");
+  const missing = paper.questions.filter((question) => !hasExamAnswer(state.examAnswers[question.id])).length;
+  if (!force && button.dataset.confirm !== "1") {
+    button.dataset.confirm = "1";
+    const extra = state.examUnsupported ? ` · ${state.examUnsupported} 特殊题型` : "";
+    button.textContent = missing
+      ? `确认交卷（${missing} 题未答${extra}）`
+      : `确认交卷${extra}`;
+    toast("再点一次确认交卷；交卷后不能再修改", "warn");
+    window.setTimeout(() => {
+      if (state.examPaper && !state.examSubmitting) {
+        button.dataset.confirm = "";
+        button.textContent = "交卷";
+      }
+    }, 6000);
+    return;
+  }
+  button.dataset.confirm = "";
+  button.disabled = true;
+  state.examSubmitting = true;
+  button.textContent = "交卷中…";
+  try {
+    const total = paper.questions.length;
+    let saved = 0;
+    for (const question of paper.questions) {
+      const answer = state.examAnswers[question.id];
+      if (!hasExamAnswer(answer) && !state.examCleared.has(question.id)) continue;
+      saved += 1;
+      button.textContent = `交卷中… ${saved}/${total}`;
+      await api("/api/exam/answer", postJson({
+        exam_id: paper.exam_id,
+        question_id: question.id,
+        answer,
+      }));
+      state.examSavedIds.add(question.id);
+    }
+    button.textContent = "正在交卷…";
+    const data = await api("/api/exam/submit", postJson({
+      exam_id: paper.exam_id,
+      pre_saved: true,
+    }));
+    toast(`已交卷：保存 ${data.saved || saved || 0} 题`, "ok");
+    stopExamTimer();
+    clearExamAnswers();
+    state.examPaper = null;
+    state.examAnswers = {};
+    state.examSubmitting = false;
+    state.examSavedIds.clear();
+    state.examCleared.clear();
+    state.examUnsupported = 0;
+    $("#examRunner").hidden = true;
+    $("#examActive").hidden = true;
+    $("#examTimer").textContent = "--:--";
+    $("#examTimer").classList.remove("danger");
+    $("#examActiveTimer").textContent = "--:--";
+    $("#examActiveTimer").classList.remove("danger");
+    $("#examSheet").innerHTML = "";
+    $("#examAnswered").textContent = "0 / 0";
+    $("#examPct").textContent = "0.00%";
+    $("#examProgressBar").style.width = "0%";
+    $("#examCurrent").textContent = "选择一场考试开始";
+    $("#examPhase").textContent = "待命";
+    $("#examRing").style.setProperty("--p", 0);
+    $("#examRingText").textContent = "0%";
+    state.examLoaded = false;
+    loadExams(true);
+  } catch (error) {
+    state.examSubmitting = false;
+    button.disabled = false;
+    button.textContent = "交卷";
+    if (error.status !== 401) toast(error.message, "error");
   }
 }
 
@@ -715,6 +1280,70 @@ function renderIcons() {
   }
 }
 
+let authLostAt = 0;
+
+/* 会话失效时不整页刷新：直接退回登录视图，避免刷新后又判定已登录的死循环。 */
+function handleAuthLost() {
+  const now = Date.now();
+  if (now - authLostAt < 2000) return;
+  authLostAt = now;
+  stopQrPolling();
+  window.clearTimeout(quizPollTimer);
+  quizWasRunning = false;
+  quizSince = 0;
+  state.running = false;
+  state.user = "";
+  state.courses = [];
+  state.selected.clear();
+  state.chapterCache.clear();
+  state.chapterCounts.clear();
+  state.chapterUnits.clear();
+  state.chapterDone.clear();
+  state.chapterTotal.clear();
+  state.quizItems = [];
+  state.quizLoaded = false;
+  state.courseGeneration += 1;
+  state.stats = { done: 0, failed: 0 };
+  state.exams = [];
+  state.examLoaded = false;
+  state.examPaper = null;
+  state.examAnswers = {};
+  state.examSavedIds.clear();
+  state.examCleared.clear();
+  state.examUnsupported = 0;
+  stopExamTimer();
+  $("#examActiveTimer").textContent = "--:--";
+  $("#examActiveTimer").classList.remove("danger");
+  state.since = 0;
+  state.percentShown = 0;
+  setRunningUi(false);
+  updateStats();
+  $("#appView").hidden = true;
+  $("#loginView").hidden = false;
+  ["#userChip", "#diagnoseBtn", "#refreshBtn", "#logoutBtn"].forEach((selector) => {
+    const node = $(selector);
+    if (node) node.hidden = true;
+  });
+  $("#quizRunner").hidden = true;
+  $("#quizActive").hidden = true;
+  $("#quizList").hidden = false;
+  $("#quizList").innerHTML = '<div class="chapter-note">还没有读取测验，点右上角「刷新测验」。</div>';
+  $("#examRunner").hidden = true;
+  $("#examActive").hidden = true;
+  $("#examSheet").innerHTML = "";
+  $("#examAnswered").textContent = "0 / 0";
+  $("#console").innerHTML = '<div class="console-empty" id="consoleEmpty">暂无日志，开始刷课后这里会实时输出。</div>';
+  $("#progressPct").textContent = "0.00%";
+  $("#progressBar").style.width = "0%";
+  $("#phaseLabel").textContent = "待命";
+  $("#currentTask").textContent = "选择课程后点击「开始刷课」";
+  $("#courseGrid").innerHTML = "";
+  $("#courseEmpty").hidden = true;
+  setView("brush");
+  setMode("password", false);
+  toast("登录已失效，请重新登录", "error");
+}
+
 async function api(path, options) {
   const response = await fetch(path, options);
   let data = {};
@@ -722,6 +1351,9 @@ async function api(path, options) {
     data = await response.json();
   } catch {
     data = {};
+  }
+  if (response.status === 401) {
+    handleAuthLost();
   }
   if (!response.ok || data.ok === false) {
     const error = new Error(data.error || `请求失败（${response.status}）`);
@@ -1061,6 +1693,8 @@ async function loadCourses({ animate: animateIn } = {}) {
     state.chapterDone.clear();
     state.chapterTotal.clear();
     state.quizLoaded = false;
+    state.exams = [];
+    state.examLoaded = false;
     state.courseGeneration += 1;
     renderCourses(animateIn);
     updateStats();
@@ -1069,12 +1703,7 @@ async function loadCourses({ animate: animateIn } = {}) {
       toast(`已读取 ${state.courses.length} 门课程`, "ok");
     }
   } catch (error) {
-    if (error.status === 401) {
-      toast("登录已失效，请重新登录", "error");
-      window.setTimeout(backToLogin, 900);
-      return;
-    }
-    toast(error.message, "error");
+    if (error.status !== 401) toast(error.message, "error");
   } finally {
     refreshBtn.disabled = false;
   }
@@ -1466,10 +2095,7 @@ async function runDiagnose() {
       data.passed ? "ok" : "warn",
     );
   } catch (error) {
-    if (error.status === 401) {
-      toast("登录已失效，请重新登录", "error");
-      return;
-    }
+    if (error.status === 401) return;
     toast(error.message, "error");
   } finally {
     button.disabled = false;
@@ -1713,6 +2339,27 @@ function bindUi() {
   $("#quizNext").addEventListener("click", () => quizStep(1));
   $("#quizAi").addEventListener("click", aiFillQuestion);
   $("#quizSubmit").addEventListener("click", submitQuizView);
+
+  $("#examRefresh").addEventListener("click", () => loadExams(true));
+  $("#examSearch").addEventListener("input", () => {
+    state.examQuery = $("#examSearch").value.trim();
+    renderExamList();
+  });
+  $$("#examFilter button").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.examFilter = button.dataset.filter || "all";
+      $$("#examFilter button").forEach((item) => {
+        item.classList.toggle("active", item === button);
+      });
+      renderExamList();
+    });
+  });
+  $("#examClose").addEventListener("click", closeExamRunner);
+  $("#examResume").addEventListener("click", resumeExamRunner);
+  $("#examPrev").addEventListener("click", () => examStep(-1));
+  $("#examNext").addEventListener("click", () => examStep(1));
+  $("#examAi").addEventListener("click", aiFillExamQuestion);
+  $("#examSubmit").addEventListener("click", submitExam);
   $$("[data-theme-choice]").forEach((button) => {
     button.addEventListener("click", () => updateThemeChoice(button.dataset.themeChoice));
   });

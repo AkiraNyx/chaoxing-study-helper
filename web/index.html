@@ -140,12 +140,13 @@
         <nav class="side-nav">
           <button class="side-item primary active" data-view="brush"><i data-lucide="play-circle" aria-hidden="true"></i><span>刷课</span></button>
           <button class="side-item primary" data-view="quiz"><i data-lucide="list-checks" aria-hidden="true"></i><span>做题</span></button>
+          <button class="side-item primary" data-view="exam"><i data-lucide="file-text" aria-hidden="true"></i><span>考试</span></button>
           <div class="side-sep"></div>
           <button class="side-item" data-view="ai"><i data-lucide="sparkles" aria-hidden="true"></i><span>AI 接口</span></button>
           <button class="side-item" data-view="settings"><i data-lucide="settings" aria-hidden="true"></i><span>设置</span></button>
           <button class="side-item" data-view="about"><i data-lucide="info" aria-hidden="true"></i><span>关于</span></button>
         </nav>
-        <div class="side-foot">本地运行 · v1.0.6</div>
+        <div class="side-foot">本地运行 · v1.1.1</div>
       </aside>
       <div class="app-main">
         <section class="view" id="view-brush">
@@ -300,6 +301,80 @@
           </div>
         </section>
 
+        <section class="view" id="view-exam" hidden>
+          <div class="layout">
+            <div class="exam-main">
+              <div class="panel">
+                <div class="panel-head">
+                  <div>
+                    <h2>课程考试</h2>
+                    <p class="muted">打开考试会立即开始计时；交卷后不能修改，请确认后再进入</p>
+                  </div>
+                  <button class="btn ghost" id="examRefresh" type="button">刷新考试</button>
+                </div>
+                <div class="quiz-tools">
+                  <label class="search quiz-search">
+                    <i data-lucide="search" aria-hidden="true"></i>
+                    <input id="examSearch" placeholder="搜索考试 / 课程" autocomplete="off" spellcheck="false">
+                  </label>
+                  <div class="quiz-filter" id="examFilter">
+                    <button type="button" class="active" data-filter="all">全部</button>
+                    <button type="button" data-filter="pending">未完成</button>
+                    <button type="button" data-filter="done">已完成</button>
+                  </div>
+                </div>
+                <div class="exam-active" id="examActive" hidden>
+                  <span class="exam-active-name" id="examActiveName"></span>
+                  <span class="pill">考试进行中</span>
+                  <span class="exam-timer" id="examActiveTimer">--:--</span>
+                  <button class="btn ghost tiny" id="examResume" type="button">回到试卷</button>
+                </div>
+                <div class="quiz-list" id="examList">
+                  <div class="chapter-note">还没有读取考试，点右上角「刷新考试」。</div>
+                </div>
+              </div>
+
+              <div class="panel quiz-runner exam-runner" id="examRunner" hidden>
+                <div class="quiz-dialog-head">
+                  <div>
+                    <h3 id="examTitle">课程考试</h3>
+                    <p class="muted" id="examMeta"></p>
+                  </div>
+                  <div class="exam-head-right">
+                    <span class="exam-timer" id="examTimer">--:--</span>
+                    <button class="win-btn" id="examClose" type="button" aria-label="收起"><i data-lucide="x" aria-hidden="true"></i></button>
+                  </div>
+                </div>
+                <div class="quiz-dialog-progress">
+                  <span id="examIndex">1 / 1</span>
+                  <div class="bar"><i id="examBar"></i></div>
+                  <div class="quiz-ring" id="examRing"><span id="examRingText">0%</span></div>
+                </div>
+                <div class="exam-hint" id="examHint">交卷前请确认所有题目；主观题按自己的理解作答。</div>
+                <div class="quiz-question" id="examQuestion"></div>
+                <div class="quiz-dialog-actions">
+                  <button class="btn ghost" id="examPrev" type="button">上一题</button>
+                  <button class="btn ghost" id="examAi" type="button">AI 填这题</button>
+                  <button class="btn ghost" id="examNext" type="button">下一题</button>
+                  <button class="btn primary" id="examSubmit" type="button">交卷</button>
+                </div>
+              </div>
+            </div>
+
+            <aside class="panel quiz-side exam-side">
+              <h2>考试进度</h2>
+              <div class="progress-card">
+                <div class="progress-top"><span id="examPhase">待命</span><b id="examPct">0.00%</b></div>
+                <div class="bar"><i id="examProgressBar"></i></div>
+                <p class="current" id="examCurrent">选择一场考试开始</p>
+              </div>
+              <div class="exam-sheet-head"><span>答题卡</span><small id="examAnswered">0 / 0</small></div>
+              <div class="exam-sheet" id="examSheet"></div>
+              <p class="tip">人脸识别 / 人机验证的考试无法在这里作答，请用学习通客户端完成。</p>
+            </aside>
+          </div>
+        </section>
+
         <section class="view" id="view-ai" hidden>
           <div class="panel">
             <div class="panel-head">
@@ -335,7 +410,7 @@
               <button class="btn ghost" id="aiTestBtn" type="button">测试连接</button>
               <span class="muted" id="aiStatus"></span>
             </div>
-            <p class="tip">Key 只保存在本机配置目录。章节测验目前会排在所有视频/文档之后统一处理。</p>
+            <p class="tip">Key 以明文保存在本机 config.json，只在本机使用。章节测验目前会排在所有视频/文档之后统一处理。</p>
           </div>
         </section>
 
@@ -359,7 +434,7 @@
               <button class="btn ghost" id="clearLoginBtn" type="button">清除已保存登录</button>
             </div>
             <div class="setting-row">
-              <div><strong>数据位置</strong><p class="muted">主题和开关存在浏览器本地；AI 配置存在本机 <code>%APPDATA%\学习通刷课\config.json</code>。</p></div>
+              <div><strong>数据位置</strong><p class="muted">主题和开关存在浏览器本地；AI 配置（Key 明文）存在本机 <code>%APPDATA%\学习通刷课\config.json</code>。</p></div>
             </div>
           </div>
         </section>
@@ -368,8 +443,8 @@
           <div class="panel about">
             <div class="about-head">
               <span class="about-eyebrow">LOCAL · WINDOWS · SINGLE FILE</span>
-              <h2>学习通刷课助手 <span class="about-version">v1.0.6</span></h2>
-              <p class="muted">把视频、文档、阅读和章节测验收进一个窗口。所有请求只从本机发出，不上传课程数据。</p>
+              <h2>学习通刷课助手 <span class="about-version">v1.1.1</span></h2>
+              <p class="muted">把视频、文档、阅读、章节测验和课程考试收进一个窗口。所有请求只从本机发出，不上传课程数据。</p>
             </div>
             <div class="about-links">
               <a data-external href="https://github.com/AkiraNyx/chaoxing-study-helper"><i data-lucide="github" aria-hidden="true"></i>GitHub 仓库</a>
@@ -378,7 +453,7 @@
             </div>
             <dl class="about-meta">
               <div><dt>作者</dt><dd>AkiraNyx</dd></div>
-              <div><dt>版本</dt><dd>v1.0.6</dd></div>
+              <div><dt>版本</dt><dd>v1.1.1</dd></div>
               <div><dt>代码协议</dt><dd>GNU AGPL-3.0</dd></div>
               <div><dt>桌面</dt><dd>Microsoft Edge WebView2 · 单文件 exe</dd></div>
               <div><dt>界面</dt><dd>暖纸色设计 · anime.js v4 · Lucide</dd></div>

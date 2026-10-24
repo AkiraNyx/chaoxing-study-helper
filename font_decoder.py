@@ -21,6 +21,7 @@ except ImportError:  # pragma: no cover
     TTFont = None
 
 _TABLE = None
+_REVERSE = None
 
 
 def _resource_dir() -> str:
@@ -37,6 +38,16 @@ def _table() -> dict:
         except (OSError, json.JSONDecodeError):
             _TABLE = {}
     return _TABLE
+
+
+def _reverse_table() -> dict:
+    global _REVERSE
+    if _REVERSE is None:
+        reverse = {}
+        for name, value in _table().items():
+            reverse.setdefault(value, name)
+        _REVERSE = reverse
+    return _REVERSE
 
 
 def has_encryption(html: str) -> bool:
@@ -81,9 +92,7 @@ def make_decoder(html: str):
         return None
     if not glyph_map:
         return None
-    reverse = {}
-    for name, value in _table().items():
-        reverse.setdefault(value, name)
+    reverse = _reverse_table()
 
     def decode(text: str) -> str:
         result = []

@@ -1,8 +1,5 @@
 """学习通刷课助手 · 本地 Web 服务。
-
-启动后浏览器打开 http://127.0.0.1:<port>/ 即可使用。
-纯标准库实现，无需安装依赖。
-"""
+启动后浏览器打开 http://127.0.0.1:<port>/ 即可使用。纯标准库实现，无需安装依赖。"""
 
 from __future__ import annotations
 
@@ -34,6 +31,9 @@ def _config_path() -> str:
     return os.path.join(folder, "config.json")
 
 
+_CONFIG_LOCK = threading.Lock()
+
+
 def load_config() -> dict:
     try:
         with open(_config_path(), "r", encoding="utf-8") as handle:
@@ -44,8 +44,12 @@ def load_config() -> dict:
 
 
 def save_config(config: dict) -> None:
-    with open(_config_path(), "w", encoding="utf-8") as handle:
-        json.dump(config, handle, ensure_ascii=False, indent=2)
+    with _CONFIG_LOCK:
+        path = _config_path()
+        temp = path + ".tmp"
+        with open(temp, "w", encoding="utf-8") as handle:
+            json.dump(config, handle, ensure_ascii=False, indent=2)
+        os.replace(temp, path)
 
 
 def _cookie_header(client: chaoxing.Client) -> str:
@@ -127,6 +131,8 @@ class AppState:
         self.scan_current = ""
         self.scan_result = None
         self.restore_attempted = False
+        self.exam_cache = {}
+        self.exam_papers: dict[str, chaoxing.ExamPaper] = {}
 
     # -- 日志 / 状态 -------------------------------------------------------
     def add_quiz_log(self, level: str, text: str) -> None:
@@ -247,6 +253,8 @@ class AppState:
             self.phase = "idle"
             self.stats = {"done": 0, "failed": 0, "skipped": 0}
             self.summary = None
+            self.exam_cache.clear()
+            self.exam_papers.clear()
 
     def snapshot(self, since: int) -> dict:
         with self.lock:
@@ -318,7 +326,7 @@ def diagnose(client: chaoxing.Client) -> dict:
     kinds: dict[str, int] = {}
     for job in jobs:
         kinds[job.type] = kinds.get(job.type, 0) + 1
-    detail = "，".join(f"{name}×{count}" for name, count in kinds.items()) or "没有任务点"
+    detail = "、".join(f"{name}×{count}" for name, count in kinds.items()) or "没有任务点"
     add(f"任务点（{point.title}）", bool(jobs), detail)
 
     work = next((job for job in jobs if job.type in {"workid", "work"}), None)
@@ -460,7 +468,7 @@ def _ask_question(ai: AIClient, question) -> str:
             "role": "system",
             "content": (
                 "你是学习通章节测验答题助手。只输出最终答案本身，不要解释。"
-                "单选输出选项字母；多选输出按字母排序的字母串；判断输出 true/false；"
+                "单选输出选项字母；多选输出按字母排序的字母串；判断输出 true/false。"
                 "填空和简答输出文本。"
             ),
         },
@@ -474,6 +482,43 @@ def _ask_question(ai: AIClient, question) -> str:
         },
     ], temperature=0)
     return _normalize_quiz_answer(question, reply)
+
+
+def _exam_payload(paper: chaoxing.ExamPaper) -> dict:
+    return {
+        "exam_id": paper.exam_id,
+        "title": paper.title,
+        "remain_time": paper.enc_remain_time or paper.remain_time,
+        "fetched_at": paper.fetched_at,
+        "saved": sorted(paper.saved_ids),
+        "questions": [
+            {
+                "id": question.id,
+                "type": question.type,
+                "type_code": question.type_code,
+                "title": question.title,
+                "options": [{"key": key, "text": text} for key, text in question.options],
+                "blanks": question.blanks,
+                "answer": question.answer,
+            }
+            for question in paper.questions
+        ],
+    }
+
+
+def _find_exam(client: chaoxing.Client, course: chaoxing.Course, exam_id: str) -> chaoxing.Exam:
+    with STATE.lock:
+        cached = STATE.exam_cache.get(course.course_id)
+    if cached and time.time() - cached[0] < 300:
+        exams = cached[1]
+    else:
+        exams = client.get_exams(course)
+        with STATE.lock:
+            STATE.exam_cache[course.course_id] = (time.time(), exams)
+    exam = next((item for item in exams if item.exam_id == str(exam_id)), None)
+    if exam is None:
+        raise chaoxing.ExamError("考试不存在或列表已变化，请刷新考试列表")
+    return exam
 
 
 def _load_quiz(client: chaoxing.Client, course_index: int, point_id: str, jobid: str):
@@ -535,21 +580,23 @@ def _quiz_worker(client: chaoxing.Client, course: chaoxing.Course, point_id: str
         missing = sum(1 for question in quiz.questions if not answers.get(question.id))
         state.set_quiz_progress(94, "提交答案")
         log("info", "提交答案…")
-        ok, message = client.submit_quiz(quiz, answers, save_only=missing > 0)
+        save_only = missing > 0
+        ok, message = client.submit_quiz(quiz, answers, save_only=save_only)
         summary = {
-            "submitted": ok,
+            "submitted": bool(ok and not save_only),
+            "saved": bool(ok and save_only),
             "message": message,
             "count": total,
             "missing": missing,
         }
         if ok:
-            log("ok", f"{'已保存' if missing else '已提交'}：{total} 题" + (f"，{missing} 题未答" if missing else ""))
+            log("ok", f"{'已保存' if save_only else '已提交'}：{total} 题" + (f"，{missing} 题未答" if missing else ""))
         else:
             log("error", f"提交失败：{message}")
         state.set_quiz_progress(100, "已完成")
     except (chaoxing.ChaoxingError, AIError, OSError) as exc:
         log("error", str(exc))
-        summary = {"submitted": False, "message": str(exc), "count": 0, "missing": 0}
+        summary = {"submitted": False, "saved": False, "message": str(exc), "count": 0, "missing": 0}
         state.set_quiz_progress(100, "失败")
     finally:
         with state.lock:
@@ -630,8 +677,7 @@ def _brush_worker(client: chaoxing.Client, courses: list[chaoxing.Course], optio
     except chaoxing.NotLoggedIn:
         emit("error", "登录已失效，请重新登录")
         summary = partial("登录已失效")
-    except Exception as exc:  # noqa: BLE001 - 兜底，保证线程状态复位
-        emit("error", f"运行异常：{exc}")
+    except Exception as exc:  # noqa: BLE001 - 兜底，保证线程状态复位        emit("error", f"运行异常：{exc}")
         summary = partial(str(exc))
     finally:
         with STATE.lock:
@@ -644,7 +690,7 @@ def _brush_worker(client: chaoxing.Client, courses: list[chaoxing.Course], optio
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "ChaoxingHelper/1.0"
+    server_version = "ChaoxingHelper/1.1.1"
     protocol_version = "HTTP/1.1"
 
     def log_message(self, *args):  # 静默
@@ -671,6 +717,11 @@ class Handler(BaseHTTPRequestHandler):
     def _error(self, message: str, status: int = 400) -> None:
         self._json({"ok": False, "error": message}, status)
 
+    def _reject(self, message: str, status: int = 403) -> None:
+        """拒绝请求时直接断开连接，避免未读的请求体污染下一个请求。"""
+        self.close_connection = True
+        self._error(message, status)
+
     def _read_json(self) -> dict:
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -684,6 +735,40 @@ class Handler(BaseHTTPRequestHandler):
             return data if isinstance(data, dict) else {}
         except (UnicodeDecodeError, json.JSONDecodeError):
             return {}
+
+    # -- 请求校验 ----------------------------------------------------------
+    def _host_allowed(self) -> bool:
+        """只接受回环地址，挡住 DNS rebinding。"""
+        host = (self.headers.get("Host") or "").strip().lower()
+        if not host:
+            return True
+        if host.startswith("["):
+            return host.startswith("[::1]")
+        return host.rsplit(":", 1)[0] in {"127.0.0.1", "localhost"}
+
+    def _json_request_allowed(self) -> bool:
+        """只接受本机页面发来的 JSON，挡住跨站表单提交。"""
+        origin = (self.headers.get("Origin") or "").strip().rstrip("/")
+        if origin:
+            port = self.server.server_port
+            allowed = {
+                f"http://127.0.0.1:{port}",
+                f"http://localhost:{port}",
+                f"http://[::1]:{port}",
+            }
+            if origin not in allowed:
+                return False
+        content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        return content_type in {"", "application/json"}
+
+    def _drop_session(self, message: str = "登录已失效，请重新登录") -> None:
+        """会话失效时清掉内存里的客户端，避免前端刷新后仍被判为已登录。"""
+        with STATE.lock:
+            STATE.client = None
+            STATE.restore_attempted = True
+            if STATE.running:
+                STATE.stop_event.set()
+        self._error(message, 401)
 
     # -- 静态文件 ----------------------------------------------------------
     def _static(self, path: str) -> None:
@@ -702,28 +787,34 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- 路由 --------------------------------------------------------------
     def do_GET(self) -> None:  # noqa: N802
+        if not self._host_allowed():
+            return self._reject("非法的 Host")
         parsed = urllib.parse.urlparse(self.path)
         if not parsed.path.startswith("/api/"):
             return self._static(parsed.path)
         try:
             self._api_get(parsed)
         except chaoxing.NotLoggedIn:
-            self._error("登录已失效，请重新登录", 401)
+            self._drop_session()
         except chaoxing.ChaoxingError as exc:
             self._error(str(exc), 400)
         except Exception as exc:  # noqa: BLE001
             self._error(f"服务器错误：{exc}", 500)
 
     def do_POST(self) -> None:  # noqa: N802
+        if not self._host_allowed():
+            return self._reject("非法的 Host")
         parsed = urllib.parse.urlparse(self.path)
         if not parsed.path.startswith("/api/"):
             return self._error("Not found", 404)
+        if not self._json_request_allowed():
+            return self._reject("只接受本机页面的 JSON 请求")
         try:
             self._api_post(parsed)
         except chaoxing.LoginError as exc:
             self._error(str(exc), 400)
         except chaoxing.NotLoggedIn:
-            self._error("登录已失效，请重新登录", 401)
+            self._drop_session()
         except chaoxing.ChaoxingError as exc:
             self._error(str(exc), 400)
         except Exception as exc:  # noqa: BLE001
@@ -839,6 +930,80 @@ class Handler(BaseHTTPRequestHandler):
                 ],
             })
 
+        if route == "/api/exams":
+            client = self._require_client()
+            with STATE.lock:
+                if STATE.running:
+                    return self._error("正在刷课，请先停止", 409)
+                all_courses = list(STATE.courses)
+            raw = (query.get("indices") or [""])[0]
+            indices = []
+            for part in raw.split(","):
+                try:
+                    index = int(part)
+                except ValueError:
+                    continue
+                if 0 <= index < len(all_courses):
+                    indices.append(index)
+            if not indices:
+                return self._error("请先在刷课页勾选要读取的课程", 400)
+            refresh = (query.get("refresh") or ["0"])[0] == "1"
+            items = []
+            errors = []
+            for index in indices:
+                course = all_courses[index]
+                with STATE.lock:
+                    cached = STATE.exam_cache.get(course.course_id)
+                if cached and not refresh and time.time() - cached[0] < 300:
+                    exams = cached[1]
+                else:
+                    try:
+                        exams = client.get_exams(course)
+                    except (chaoxing.ChaoxingError, OSError) as exc:
+                        errors.append(f"{course.title}：{exc}")
+                        continue
+                    with STATE.lock:
+                        STATE.exam_cache[course.course_id] = (time.time(), exams)
+                for exam in exams:
+                    items.append({
+                        "course": course.title,
+                        "course_index": index,
+                        "exam_id": exam.exam_id,
+                        "title": exam.title,
+                        "status": exam.status,
+                        "expire": exam.expire,
+                        "completed": "已完成" in exam.status,
+                    })
+            items.sort(key=lambda item: (item["completed"], item["course"], item["title"]))
+            return self._json({"ok": True, "exams": items, "errors": errors})
+
+        if route == "/api/exam/cover":
+            client = self._require_client()
+            try:
+                index = int((query.get("course_index") or ["-1"])[0])
+            except ValueError:
+                index = -1
+            with STATE.lock:
+                if not (0 <= index < len(STATE.courses)):
+                    return self._error("课程不存在，请刷新课程列表", 404)
+                course = STATE.courses[index]
+            exam_id = (query.get("exam_id") or [""])[0]
+            try:
+                exam = _find_exam(client, course, exam_id)
+                cover = client.exam_cover(course, exam)
+            except chaoxing.ExamCompleted as exc:
+                return self._json({"ok": True, "completed": True, "message": str(exc)})
+            except (chaoxing.ChaoxingError, OSError) as exc:
+                return self._error(str(exc), 400)
+            return self._json({
+                "ok": True,
+                "completed": False,
+                "title": cover["title"],
+                "need_face": cover["need_face"],
+                "need_captcha": cover["need_captcha"],
+                "need_code": cover["need_code"],
+            })
+
         if route == "/api/quizzes":
             client = self._require_client()
             with STATE.lock:
@@ -945,6 +1110,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True, "saved": False})
 
         if route == "/api/login":
+            with STATE.lock:
+                if STATE.running:
+                    return self._error("正在刷课，请先停止", 409)
             mode = payload.get("mode") or "password"
             client = CLIENT_FACTORY()
             if mode == "cookie":
@@ -961,15 +1129,18 @@ class Handler(BaseHTTPRequestHandler):
                     return self._error("请填写账号和密码")
                 client.login_with_password(username, password)
             remember = bool(payload.get("remember", True))
-            if remember:
-                _save_login(client)
             with STATE.lock:
                 if STATE.running:
                     return self._error("正在刷课，请先停止", 409)
                 STATE.client = client
+                if remember:
+                    saved = _save_login(client)
+                else:
+                    session_store.clear()
+                    saved = False
             STATE.reset_session()
             STATE.add_log("ok", f"登录成功：{client.name or client.uid}")
-            return self._json({"ok": True, "name": client.name or client.uid, "remembered": remember})
+            return self._json({"ok": True, "name": client.name or client.uid, "remembered": saved})
 
         if route == "/api/ai/config":
             config = load_config()
@@ -1027,30 +1198,6 @@ class Handler(BaseHTTPRequestHandler):
             ).start()
             return self._json({"ok": True})
 
-        if route == "/api/quiz/detail":
-            client = self._require_client()
-            try:
-                index = int((query.get("course_index") or ["-1"])[0])
-                point_id = (query.get("point_id") or [""])[0]
-                jobid = (query.get("jobid") or [""])[0]
-                _course, quiz = _load_quiz(client, index, point_id, jobid)
-            except (chaoxing.ChaoxingError, ValueError, IndexError) as exc:
-                return self._error(str(exc), 400)
-            if quiz.completed:
-                with STATE.lock:
-                    STATE.quiz_done.add(jobid)
-                    STATE.quiz_cache.pop(_course.course_id, None)
-            return self._json({
-                "ok": True,
-                "completed": quiz.completed,
-                "score": quiz.score,
-                "encrypted": quiz.encrypted,
-                "questions": [
-                    {"id": q.id, "type": q.type, "title": q.title, "options": q.options}
-                    for q in quiz.questions
-                ],
-            })
-
         if route == "/api/quiz/ai":
             ai = ai_from_config()
             if ai is None:
@@ -1083,23 +1230,101 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(str(exc), 400)
             answers = {str(key): str(value) for key, value in (payload.get("answers") or {}).items()}
             missing = sum(1 for q in quiz.questions if not answers.get(q.id))
+            save_only = bool(payload.get("save_only")) or missing > 0
             try:
-                ok, message = client.submit_quiz(
-                    quiz, answers, save_only=bool(payload.get("save_only")) or missing > 0
-                )
+                ok, message = client.submit_quiz(quiz, answers, save_only=save_only)
             except chaoxing.ChaoxingError as exc:
                 return self._error(str(exc), 400)
-            if ok:
+            submitted = bool(ok and not save_only)
+            saved = bool(ok and save_only)
+            if submitted:
                 with STATE.lock:
                     STATE.quiz_done.add(str(payload.get("jobid") or ""))
                     STATE.quiz_cache.pop(_course.course_id, None)
             return self._json({
                 "ok": True,
-                "submitted": ok,
+                "submitted": submitted,
+                "saved": saved,
                 "message": message,
                 "count": len(quiz.questions),
                 "missing": missing,
             })
+
+        if route == "/api/exam/start":
+            client = self._require_client()
+            with STATE.lock:
+                if STATE.running:
+                    return self._error("正在刷课，请先停止", 409)
+                courses = list(STATE.courses)
+            try:
+                index = int(payload.get("course_index"))
+                course = courses[index]
+            except (TypeError, ValueError, IndexError):
+                return self._error("课程索引无效，请刷新考试列表", 400)
+            exam_id = str(payload.get("exam_id") or "")
+            code = str(payload.get("code") or "")
+            with STATE.lock:
+                existing = STATE.exam_papers.get(exam_id)
+            if existing is not None:
+                return self._json({"ok": True, "paper": _exam_payload(existing), "resumed": True})
+            try:
+                exam = _find_exam(client, course, exam_id)
+                paper = client.start_exam(course, exam, code)
+            except (chaoxing.ChaoxingError, OSError) as exc:
+                return self._error(str(exc), 400)
+            with STATE.lock:
+                STATE.exam_papers[paper.exam_id] = paper
+            return self._json({"ok": True, "paper": _exam_payload(paper), "resumed": False})
+
+        if route == "/api/exam/answer":
+            client = self._require_client()
+            exam_id = str(payload.get("exam_id") or "")
+            question_id = str(payload.get("question_id") or "")
+            with STATE.lock:
+                paper = STATE.exam_papers.get(exam_id)
+            if paper is None:
+                return self._error("考试会话已失效，请重新进入考试", 404)
+            question = next((item for item in paper.questions if item.id == question_id), None)
+            if question is None:
+                return self._error("题目已变化，请重新进入考试", 400)
+            index = next(i for i, item in enumerate(paper.questions) if item.id == question_id)
+            answer = payload.get("answer")
+            if answer is None:
+                answer = ""
+            try:
+                client.save_exam_answer(paper, index, question, answer)
+            except (chaoxing.ChaoxingError, OSError) as exc:
+                return self._error(str(exc), 400)
+            return self._json({
+                "ok": True,
+                "saved": True,
+                "saved_ids": sorted(paper.saved_ids),
+            })
+
+        if route == "/api/exam/submit":
+            client = self._require_client()
+            exam_id = str(payload.get("exam_id") or "")
+            with STATE.lock:
+                paper = STATE.exam_papers.pop(exam_id, None)
+            if paper is None:
+                return self._error("考试会话已失效，请重新进入考试", 404)
+            answers = payload.get("answers") or {}
+            if not isinstance(answers, dict):
+                with STATE.lock:
+                    STATE.exam_papers[exam_id] = paper
+                return self._error("答案格式不正确", 400)
+            try:
+                if payload.get("pre_saved"):
+                    result = client.finalize_exam(paper)
+                else:
+                    result = client.submit_exam(paper, answers)
+            except (chaoxing.ChaoxingError, OSError) as exc:
+                with STATE.lock:
+                    STATE.exam_papers[exam_id] = paper
+                return self._error(str(exc), 400)
+            with STATE.lock:
+                STATE.exam_cache.pop(paper.course_id, None)
+            return self._json({"ok": True, **result})
 
         if route == "/api/quizzes/scan":
             client = self._require_client()

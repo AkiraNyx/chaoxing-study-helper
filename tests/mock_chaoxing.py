@@ -69,11 +69,91 @@ window.mArg = {"defaults":{"knowledgeid":"5001","cpi":"3001","ktoken":"ktok"},
 </script></body></html>
 """
 
+EXAM_LIST_HTML = """
+<html><body>
+<ul class="nav">
+  <li data="/exam-ans/exam/phone/task-exam?taskrefId=7001&amp;enc_task=etok1">
+    <p>期中考试</p><span>未交</span><span class="fr">剩余 3 天</span>
+  </li>
+  <li data="/exam-ans/exam/phone/task-exam?taskrefId=7002&amp;enc_task=etok2">
+    <p>人脸考试</p><span>未开始</span><span class="fr">剩余 5 天</span>
+  </li>
+</ul>
+</body></html>
+"""
+
+EXAM_COVER_HTML = """
+<html><body>
+<span class="overHidden2">期中考试</span>
+<input id="testUserRelationId" value="8801">
+<input id="monitorEnc" value="monitor-enc">
+<input id="faceRecognitionCompare" value="">
+<input id="captchaCheck" value="">
+<input id="captchaCaptchaId" value="">
+<script>var needcode = 0;</script>
+</body></html>
+"""
+
+EXAM_COVER_FACE_HTML = """
+<html><body>
+<span class="overHidden2">人脸考试</span>
+<input id="testUserRelationId" value="8802">
+<input id="monitorEnc" value="monitor-enc-2">
+<input id="faceRecognitionCompare" value="1">
+<input id="captchaCheck" value="">
+<input id="captchaCaptchaId" value="">
+<script>var needcode = 0;</script>
+</body></html>
+"""
+
+EXAM_PREVIEW_HTML = """
+<html><body>
+<form id="submitTest">
+<input id="enc" value="exam-enc-1">
+<input id="encRemainTime" value="3600">
+<input id="remainTime" value="3600">
+<input id="encLastUpdateTime" value="1700000000000">
+<div class="questionWrap singleQuesId ans-cc-exam allAnswerList" data="9001">
+  <input name="questionId" value="9001">
+  <input name="type9001" value="0">
+  <div class="tit"><h3>单选题（5.0分）</h3>1. 测试单选题</div>
+  <div class="answerList radioList" name="A"><cc>A. 选项一</cc></div>
+  <div class="answerList radioList" name="B"><cc>B. 选项二</cc></div>
+  <input id="answer9001" value="">
+</div>
+<div class="questionWrap singleQuesId ans-cc-exam allAnswerList" data="9002">
+  <input name="questionId" value="9002">
+  <input name="type9002" value="1">
+  <div class="tit"><h3>多选题（5.0分）</h3>2. 测试多选题</div>
+  <div class="answerList radioList" name="A"><cc>A. 选项一</cc></div>
+  <div class="answerList radioList" name="B"><cc>B. 选项二</cc></div>
+  <div class="answerList radioList" name="C"><cc>C. 选项三</cc></div>
+  <input id="answers9002" value="">
+</div>
+<div class="questionWrap singleQuesId ans-cc-exam allAnswerList" data="9003">
+  <input name="questionId" value="9003">
+  <input name="type9003" value="3">
+  <div class="tit"><h3>判断题（5.0分）</h3>3. 测试判断题</div>
+  <input id="answer9003" value="false">
+</div>
+<div class="questionWrap singleQuesId ans-cc-exam allAnswerList" data="9004">
+  <input name="questionId" value="9004">
+  <input name="type9004" value="2">
+  <div class="tit"><h3>填空题（5.0分）</h3>4. 测试填空题</div>
+  <div class="completionList objectAuswerList"><span class="grayTit">第1空</span><textarea class="blanktextarea"></textarea></div>
+  <div class="completionList objectAuswerList"><span class="grayTit">第2空</span><textarea class="blanktextarea"></textarea></div>
+</div>
+</form>
+</body></html>
+"""
+
 
 class Handler(BaseHTTPRequestHandler):
     reports: list[dict] = []
     log_calls: list[str] = []
     qr_step = 0
+    exam_submits: list[dict] = []
+    exam_final: dict | None = None
     protocol_version = "HTTP/1.1"
 
     def log_message(self, *args):
@@ -81,6 +161,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send(self, code: int, body: str, ctype: str = "text/html; charset=utf-8") -> None:
         self._send_bytes(code, body.encode("utf-8"), ctype)
+
+    def _redirect(self, location: str) -> None:
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _send_bytes(self, code: int, raw: bytes, ctype: str) -> None:
         self.send_response(code)
@@ -124,6 +210,20 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/mooc-ans/multimedia/log/a/"):
             return self._report(query)
 
+        if path == "/exam/phone/task-list":
+            return self._send(200, EXAM_LIST_HTML)
+
+        if path == "/exam-ans/exam/phone/task-exam":
+            if query.get("taskrefId") == "7002":
+                return self._send(200, EXAM_COVER_FACE_HTML)
+            return self._send(200, EXAM_COVER_HTML)
+
+        if path == "/exam-ans/exam/phone/start":
+            return self._redirect("/exam-ans/exam/phone/task?enc=exam-enc-1")
+
+        if path == "/exam-ans/exam/phone/preview":
+            return self._send(200, EXAM_PREVIEW_HTML)
+
         return self._send(404, "not found")
 
     def do_POST(self) -> None:  # noqa: N802
@@ -144,6 +244,30 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"status": True, "type": "1"})
         if parsed.path == "/mooc2-ans/visit/courselistdata":
             return self._send(200, COURSE_HTML)
+        if parsed.path == "/exam-ans/exam/test/reVersionSubmitTestNew":
+            form = {
+                key: values[0]
+                for key, values in urllib.parse.parse_qs(
+                    raw.decode("utf-8", "replace"), keep_blank_values=True
+                ).items()
+            }
+            form.update({
+                key: values[0]
+                for key, values in urllib.parse.parse_qs(
+                    parsed.query, keep_blank_values=True
+                ).items()
+            })
+            Handler.exam_submits.append(form)
+            if not form.get("pos") or not form.get("value") or not form.get("_edt"):
+                return self._json({"status": "fail", "msg": "缺少签名参数"})
+            if form.get("tempSave") == "true":
+                return self._json({
+                    "status": "success",
+                    "msg": "保存成功",
+                    "data": "1700000000001|3599|enc-next",
+                })
+            Handler.exam_final = form
+            return self._json({"status": "success", "msg": "交卷成功"})
         return self._send(404, "not found")
 
     def _report(self, query: dict) -> None:
@@ -172,6 +296,8 @@ class Handler(BaseHTTPRequestHandler):
 def serve(port: int = 0) -> tuple[str, ThreadingHTTPServer]:
     Handler.reports = []
     Handler.qr_step = 0
+    Handler.exam_submits = []
+    Handler.exam_final = None
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)

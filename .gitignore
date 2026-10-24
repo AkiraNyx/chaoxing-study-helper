@@ -7,6 +7,8 @@ __pycache__/
 # 构建产物
 build/
 dist/*.spec
+dist/*.txt
+dist/*.log
 
 # 本地环境 / 密钥
 .env
@@ -14,6 +16,7 @@ dist/*.spec
 config.json
 cookie*.txt
 *Cookie*.txt
+*.cookie
 
 # 临时抓取
 _stu_page.html
