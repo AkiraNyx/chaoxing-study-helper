@@ -121,18 +121,19 @@ def _center_window(window) -> None:
 
 
 def _configure_graphics() -> None:
-    """默认关闭 WebView2 的 GPU 合成，规避部分 Windows 11/显卡驱动闪屏。"""
+    """默认硬件加速；只有显式兼容模式才关闭 WebView2 GPU。"""
     existing = os.environ.get("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "").strip()
+    parts = existing.split()
     if "--gpu" in sys.argv:
-        remaining = " ".join(
-            part for part in existing.split() if part != "--disable-gpu"
-        ).strip()
+        remaining = " ".join(part for part in parts if part != "--disable-gpu").strip()
         if remaining:
             os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = remaining
         else:
             os.environ.pop("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", None)
         return
-    if "--disable-gpu" not in existing.split():
+    if "--safe-graphics" not in sys.argv and "--disable-gpu" not in sys.argv:
+        return
+    if "--disable-gpu" not in parts:
         os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
             f"{existing} --disable-gpu".strip()
         )
