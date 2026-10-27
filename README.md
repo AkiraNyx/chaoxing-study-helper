@@ -120,7 +120,7 @@ flowchart LR
 5. 想考试就切到「考试」→「刷新考试」→「开始」（会立即开始计时）
 6. 卡住了就点右上角「诊断」，它会告诉你哪一层断了
 
-> 不想拉整个仓库？直接去 [Releases](https://github.com/AkiraNyx/chaoxing-study-helper/releases) 下载 `chaoxing-study-helper-v1.1.8.exe`。
+> 不想拉整个仓库？直接去 [Releases](https://github.com/AkiraNyx/chaoxing-study-helper/releases) 下载 `chaoxing-study-helper-v1.1.9.exe`。
 
 > 首次启动会解包到临时目录，慢一两秒是正常的。SmartScreen 拦截就点「更多信息 → 仍要运行」。
 
@@ -193,7 +193,7 @@ API Key 以明文保存在本机的 `%APPDATA%\学习通刷课\config.json`，�
 ## 已知边界
 
 - **风控 / 进度不确认**：倍速越高越容易出现 403，或视频到结尾但服务器仍不确认完成；遇到就降到 1.5×–2× 后重试
-- **Windows 11 闪屏**：默认使用 WebView2 硬件加速；只有出现白色残影时才用 `学习通刷课.exe --safe-graphics` 启动（源码运行则为 `python desktop.py --safe-graphics`）
+- **Windows 11 闪屏**：默认使用 WebView2 硬件加速；出现白色残影时在「设置 → 图形兼容模式」开启兼容模式并重启。命令行 `--safe-graphics` / `--gpu` 仍可强制覆盖
 - **验证码 / 人脸**：本地无法自动处理，需要手动过
 - **测验页改版**：提交字段和 DOM 可能变；真实环境第一次用，建议先拿一道不重要的测验试
 - **字体映射缺口**：生僻字形可能没覆盖，会显示个别乱码

@@ -131,6 +131,38 @@ def test_exam_save_and_finalize_are_serialized():
     assert paper.finalized
 
 
+def test_graphics_setting_round_trip():
+    data = {}
+    original_load = server.load_config
+    original_save = server.save_config
+    server.load_config = lambda: data
+    server.save_config = lambda config: data.update(config)
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+    httpd.daemon_threads = True
+    threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True).start()
+    try:
+        import urllib.request
+        base = f"http://127.0.0.1:{httpd.server_port}"
+
+        def request(method, payload=None):
+            body = json.dumps(payload).encode() if payload is not None else None
+            req = urllib.request.Request(
+                base + "/api/graphics", data=body, method=method,
+                headers={"Content-Type": "application/json"} if body else {},
+            )
+            with urllib.request.urlopen(req, timeout=10) as response:
+                return json.loads(response.read().decode())
+
+        assert request("GET")["safe"] is False
+        assert request("POST", {"safe": True})["safe"] is True
+        assert request("GET")["safe"] is True
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        server.load_config = original_load
+        server.save_config = original_save
+
+
 def test_stale_quiz_worker_cannot_submit_after_session_switch():
     class FakeClient:
         uid = "old"
@@ -299,6 +331,7 @@ def main() -> None:
     test_missing_saved_answer_is_not_sent_as_none()
     test_non_object_exam_response_restores_paper()
     test_exam_save_and_finalize_are_serialized()
+    test_graphics_setting_round_trip()
     test_stale_quiz_worker_cannot_submit_after_session_switch()
     test_invalid_options_keeps_brush_idle()
     test_qr_scan_without_remember_clears_old_session()

@@ -785,7 +785,7 @@ def _brush_worker(client: chaoxing.Client, courses: list[chaoxing.Course], optio
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "ChaoxingHelper/1.1.8"
+    server_version = "ChaoxingHelper/1.1.9"
     protocol_version = "HTTP/1.1"
 
     def log_message(self, *args):  # 静默
@@ -1009,6 +1009,10 @@ class Handler(BaseHTTPRequestHandler):
                     if STATE.qr_client is qr_client:
                         STATE.qr_client = None
             return self._json({"ok": True, **result})
+
+        if route == "/api/graphics":
+            safe = bool((load_config().get("ui") or {}).get("safe_graphics"))
+            return self._json({"ok": True, "safe": safe, "restart_required": True})
 
         if route == "/api/ai/config":
             data = load_config().get("ai") or {}
@@ -1293,6 +1297,13 @@ class Handler(BaseHTTPRequestHandler):
                 STATE.reset_session()
             STATE.add_log("ok", f"登录成功：{client.name or client.uid}")
             return self._json({"ok": True, "name": client.name or client.uid, "remembered": saved})
+
+        if route == "/api/graphics":
+            safe = bool(payload.get("safe"))
+            config = load_config()
+            config.setdefault("ui", {})["safe_graphics"] = safe
+            save_config(config)
+            return self._json({"ok": True, "safe": safe, "restart_required": True})
 
         if route == "/api/ai/config":
             config = load_config()

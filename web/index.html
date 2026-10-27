@@ -146,7 +146,7 @@
           <button class="side-item" data-view="settings"><i data-lucide="settings" aria-hidden="true"></i><span>设置</span></button>
           <button class="side-item" data-view="about"><i data-lucide="info" aria-hidden="true"></i><span>关于</span></button>
         </nav>
-        <div class="side-foot">本地运行 · v1.1.8</div>
+        <div class="side-foot">本地运行 · v1.1.9</div>
       </aside>
       <div class="app-main">
         <section class="view" id="view-brush">
@@ -430,6 +430,10 @@
               <label class="switch"><input type="checkbox" id="autoLoginToggle"><span class="track"></span><span class="switch-text" id="autoLoginState">已关闭</span></label>
             </div>
             <div class="setting-row">
+              <div><strong>图形兼容模式</strong><p class="muted">关闭 WebView2 硬件加速，用于修复部分 Windows 11 白色闪屏；会降低动画性能，更改后重启软件生效。命令行 <code>--safe-graphics</code> / <code>--gpu</code> 可强制覆盖。</p></div>
+              <label class="switch"><input type="checkbox" id="graphicsCompatToggle"><span class="track"></span><span class="switch-text" id="graphicsCompatState">硬件加速</span></label>
+            </div>
+            <div class="setting-row">
               <div><strong>登录信息</strong><p class="muted">只保存 Cookie，不保存账号密码。文件位于 <code>%APPDATA%\学习通刷课\session.bin</code>。</p></div>
               <button class="btn ghost" id="clearLoginBtn" type="button">清除已保存登录</button>
             </div>
@@ -443,7 +447,7 @@
           <div class="panel about">
             <div class="about-head">
               <span class="about-eyebrow">LOCAL · WINDOWS · SINGLE FILE</span>
-              <h2>学习通刷课助手 <span class="about-version">v1.1.8</span></h2>
+              <h2>学习通刷课助手 <span class="about-version">v1.1.9</span></h2>
               <p class="muted">把视频、文档、阅读、章节测验和课程考试收进一个窗口。所有请求只从本机发出，不上传课程数据。</p>
             </div>
             <div class="about-links">
@@ -453,7 +457,7 @@
             </div>
             <dl class="about-meta">
               <div><dt>作者</dt><dd>AkiraNyx</dd></div>
-              <div><dt>版本</dt><dd>v1.1.8</dd></div>
+              <div><dt>版本</dt><dd>v1.1.9</dd></div>
               <div><dt>代码协议</dt><dd>GNU AGPL-3.0</dd></div>
               <div><dt>桌面</dt><dd>Microsoft Edge WebView2 · 单文件 exe</dd></div>
               <div><dt>界面</dt><dd>暖纸色设计 · anime.js v4 · Lucide</dd></div>

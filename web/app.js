@@ -110,7 +110,10 @@ function setView(name) {
   });
   if (name === "quiz" && !state.quizLoaded) loadQuizzes();
   if (name === "exam" && !state.examLoaded) loadExams();
-  if (name === "settings") loadAutoLogin();
+  if (name === "settings") {
+    loadAutoLogin();
+    loadGraphics();
+  }
 }
 
 function renderQuizList(quizzes) {
@@ -1302,6 +1305,29 @@ async function loadAutoLogin() {
   }
 }
 
+async function loadGraphics() {
+  try {
+    const data = await api("/api/graphics");
+    const safe = Boolean(data.safe);
+    $("#graphicsCompatToggle").checked = safe;
+    $("#graphicsCompatState").textContent = safe ? "兼容模式" : "硬件加速";
+  } catch {
+    /* 忽略读取失败，保留默认显示 */
+  }
+}
+
+async function updateGraphics(enabled) {
+  try {
+    const data = await api("/api/graphics", postJson({ safe: enabled }));
+    $("#graphicsCompatToggle").checked = Boolean(data.safe);
+    $("#graphicsCompatState").textContent = data.safe ? "兼容模式" : "硬件加速";
+    toast("图形设置已保存，重启软件后生效", "ok");
+  } catch (error) {
+    toast(error.message, "error");
+    loadGraphics();
+  }
+}
+
 async function updateAutoLogin(enabled) {
   try {
     const data = await api("/api/session/auto", postJson({ enabled }));
@@ -2445,6 +2471,9 @@ function bindUi() {
   });
   $("#autoLoginToggle").addEventListener("change", () => {
     updateAutoLogin($("#autoLoginToggle").checked);
+  });
+  $("#graphicsCompatToggle").addEventListener("change", () => {
+    updateGraphics($("#graphicsCompatToggle").checked);
   });
   $("#clearLoginBtn").addEventListener("click", clearSavedLogin);
 

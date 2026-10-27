@@ -121,17 +121,21 @@ def _center_window(window) -> None:
 
 
 def _configure_graphics() -> None:
-    """默认硬件加速；只有显式兼容模式才关闭 WebView2 GPU。"""
+    """默认硬件加速；设置页或显式参数才关闭 WebView2 GPU。"""
     existing = os.environ.get("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "").strip()
     parts = existing.split()
+    safe = bool((server.load_config().get("ui") or {}).get("safe_graphics"))
+    if "--safe-graphics" in sys.argv or "--disable-gpu" in sys.argv:
+        safe = True
     if "--gpu" in sys.argv:
+        safe = False
         remaining = " ".join(part for part in parts if part != "--disable-gpu").strip()
         if remaining:
             os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = remaining
         else:
             os.environ.pop("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", None)
         return
-    if "--safe-graphics" not in sys.argv and "--disable-gpu" not in sys.argv:
+    if not safe:
         return
     if "--disable-gpu" not in parts:
         os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
