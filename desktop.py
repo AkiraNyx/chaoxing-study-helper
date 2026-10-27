@@ -120,6 +120,24 @@ def _center_window(window) -> None:
         pass
 
 
+def _configure_graphics() -> None:
+    """默认关闭 WebView2 的 GPU 合成，规避部分 Windows 11/显卡驱动闪屏。"""
+    existing = os.environ.get("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "").strip()
+    if "--gpu" in sys.argv:
+        remaining = " ".join(
+            part for part in existing.split() if part != "--disable-gpu"
+        ).strip()
+        if remaining:
+            os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = remaining
+        else:
+            os.environ.pop("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", None)
+        return
+    if "--disable-gpu" not in existing.split():
+        os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
+            f"{existing} --disable-gpu".strip()
+        )
+
+
 def main() -> None:
     global _mutex_handle
     try:
@@ -128,6 +146,7 @@ def main() -> None:
         _alert("缺少 pywebview，请先运行：python -m pip install pywebview")
         return
 
+    _configure_graphics()
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     _mutex_handle = kernel32.CreateMutexW(None, False, MUTEX_NAME)
     if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
@@ -166,7 +185,8 @@ def main() -> None:
         api._window = window
         if test_mode:
             threading.Timer(4.0, window.destroy).start()
-        threading.Timer(0.8, lambda: _center_window(window)).start()
+        # 不在窗口显示后再次移动它；延迟 SetWindowPos 会触发部分 DWM/WebView2
+        # 合成器留下白色残影，初始位置已由上面的 x/y 计算。
         webview.start(
             icon=_icon_path() or None,
             private_mode=False,
