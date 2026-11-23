@@ -6,7 +6,7 @@
 
 | 文件 | 作用 |
 | --- | --- |
-| `dist/学习通刷课.exe` | 最终单文件桌面版（PyInstaller onefile + WebView2，约 35 MB） |
+| `dist/学习通刷课.exe` | 最终单文件桌面版（PyInstaller onefile + WebView2，约 46 MB） |
 | `desktop.py` | 桌面窗口入口：pywebview、frameless、窗口居中、单实例互斥 |
 | `server.py` | 本地 HTTP 服务与全部 JSON API（登录、刷课、做题、考试、扫描、AI、诊断） |
 
@@ -37,7 +37,7 @@
 | 文件 | 作用 |
 | --- | --- |
 | `build_exe.py` | 重新打包 exe；包含 `web/`、`icon.ico`、`font_map_table.json` |
-| `requirements-build.txt` | 打包依赖版本（pywebview / PyInstaller / fontTools） |
+| `requirements-build.txt` | 打包依赖版本（pywebview / PyInstaller / fontTools / Pillow） |
 | `demo_exam.py` | 本地考试演示：假数据、不连学习通 |
 | `icon.ico` | 窗口 / exe 图标 |
 
@@ -51,6 +51,7 @@
 | `tests/test_qr_login.py` | 扫码状态机 |
 | `tests/test_quiz_api.py` | 测验保存/提交语义、401 清理、POST 来源校验 |
 | `tests/test_exam.py` | 考试列表、封面、开始、逐题暂存、finalize 交卷 |
+| `tests/test_captcha.py` | 考试滑块验证码：JSONP、合成图定位、开始参数、封面解析 |
 | `tests/test_audit_regressions.py` | 会话隔离、答案语义、缓存身份、失败回滚回归 |
 | `docs/*.png` | 界面截图（部分为早期版本，以实际界面为准） |
 | `docs/hero.webp` | README 头图（项目横幅，HTML 渲染） |

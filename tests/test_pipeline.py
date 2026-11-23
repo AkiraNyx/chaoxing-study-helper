@@ -73,8 +73,9 @@ def main() -> None:
         for report in reports:
             assert report["enc_ok"], report
             assert report["clipTime"] == "0_12", report
-            assert report["isdrag"] == "3", report
             assert report["dtype"] == "Video", report
+        # 第一次上报视为“起播/跳转”，之后按正常播放走 isdrag=0（对齐浏览器行为）
+        assert [item["isdrag"] for item in reports] == ["3", "0"], reports
         assert reports[-1]["playing"] == 12, reports[-1]
         assert any("✔ 完成" in line for line in logs), logs
 

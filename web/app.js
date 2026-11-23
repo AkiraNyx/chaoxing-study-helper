@@ -759,8 +759,7 @@ async function openExam(item) {
       return;
     }
     if (cover.need_captcha) {
-      toast("该考试要求人机验证码，本地无法处理，请用学习通客户端完成", "warn");
-      return;
+      toast("该考试有人机验证，进入时会尝试自动完成", "warn");
     }
     let code = "";
     if (cover.need_code) {
@@ -771,7 +770,10 @@ async function openExam(item) {
     }
     if (generation !== state.authGeneration) return;
     const title = cover.title || item.title;
-    if (!window.confirm(`打开「${title}」会立即开始计时，确定进入考试吗？`)) return;
+    const captchaNote = cover.need_captcha
+      ? "\n该考试需要人机验证，软件会尝试自动完成；如果失败会提示重试。"
+      : "";
+    if (!window.confirm(`打开「${title}」会立即开始计时，确定进入考试吗？${captchaNote}`)) return;
     const data = await api("/api/exam/start", postJson({
       course_index: item.course_index,
       exam_id: item.exam_id,
@@ -2145,6 +2147,7 @@ function summarize(summary) {
   parts.push(`完成 ${summary.done} 个任务点`);
   if (summary.failed) parts.push(`失败 ${summary.failed}`);
   if (summary.skipped) parts.push(`跳过 ${summary.skipped}`);
+  if (summary.unconfirmed) parts.push(`待核验 ${summary.unconfirmed}`);
   parts.push(`用时 ${fmtTime(summary.elapsed)}`);
   toast(parts.join(" · "), summary.failed ? "warn" : "ok");
 }

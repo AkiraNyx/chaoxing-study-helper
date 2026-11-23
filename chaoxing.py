@@ -1,6 +1,7 @@
-"""超星学习通接口客户端与自动刷课执行器（纯标准库，无第三方依赖）。
+"""超星学习通接口客户端与自动刷课执行器。
 
 接口来源为学习通网页端行为：课程列表 / 章节 / 任务点卡片 / 视频进度上报。
+考试人机验证使用 Pillow 解码滑块图片；其余功能仅用标准库。
 仅供个人账号学习进度整理使用。
 """
 
@@ -9,6 +10,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import http.cookiejar
+import io
 import json
 import math
 import random
@@ -19,6 +21,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Callable, Optional
@@ -26,6 +29,11 @@ from typing import Callable, Optional
 import font_decoder
 
 from crypto import encrypt_login
+
+try:  # 考试滑块验证码需要解码 JPEG/PNG；缺少 Pillow 时给出明确提示。
+    from PIL import Image
+except ImportError:  # pragma: no cover - 打包版始终包含 Pillow
+    Image = None
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -47,11 +55,19 @@ EXAM_START_PATH = "/exam-ans/exam/phone/start"
 EXAM_PREVIEW_PATH = "/exam-ans/exam/phone/preview"
 EXAM_SUBMIT_PATH = "/exam-ans/exam/test/reVersionSubmitTestNew"
 
+# 考试人机验证走学习通独立的滑块验证码服务。
+CAPTCHA_CONF_URL = "https://captcha.chaoxing.com/captcha/get/conf"
+CAPTCHA_IMAGE_URL = "https://captcha.chaoxing.com/captcha/get/verification/image"
+CAPTCHA_CHECK_URL = "https://captcha.chaoxing.com/captcha/check/verification/result"
+CAPTCHA_CALLBACK = "cx_captcha_function"
+CAPTCHA_VERSION = "1.1.20"
+CAPTCHA_ATTEMPTS = 6
+
 EXAM_ANDROID = "Android 12"
 EXAM_MODEL = "MI11"
 EXAM_LOCALE = "zh_CN"
-EXAM_VERSION = "6.3.9"
-EXAM_BUILD = "10824_250"
+EXAM_VERSION = "7.0.4"
+EXAM_BUILD = "10995_311"
 
 
 def _mobile_ua(imei: str) -> str:
@@ -679,6 +695,7 @@ def parse_exam_cover(html: str) -> dict:
         "monitor_enc": _input_value(root, "monitorEnc"),
         "need_face": _truthy(_input_value(root, "faceRecognitionCompare")),
         "need_captcha": _truthy(_input_value(root, "captchaCheck")),
+        "captcha_id": _input_value(root, "captchaCaptchaId") or _input_value(root, "captchaId"),
         "need_code": bool(needcode and needcode.group(1) != "0"),
     }
 
@@ -803,6 +820,96 @@ def _exam_answer_fields(question: ExamQuestion, raw) -> dict:
 # ---------------------------------------------------------------------------
 # 客户端
 # ---------------------------------------------------------------------------
+def _captcha_jsonp(raw: bytes) -> dict:
+    """解析验证码接口的 JSONP；部分节点会直接返回 JSON。"""
+    text = raw.decode("utf-8", "replace").strip()
+    if not text:
+        raise ExamBlocked("人机验证接口返回为空")
+    if text.startswith("{"):
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ExamBlocked("人机验证接口返回格式异常") from exc
+    else:
+        match = re.search(r"cx_captcha_function\s*\((.*)\)\s*;?\s*$", text, re.S)
+        if not match:
+            raise ExamBlocked("人机验证接口返回格式异常")
+        try:
+            payload = json.loads(match.group(1))
+        except json.JSONDecodeError as exc:
+            raise ExamBlocked("人机验证接口返回格式异常") from exc
+    if not isinstance(payload, dict):
+        raise ExamBlocked("人机验证接口返回格式异常")
+    if payload.get("error") not in (None, 0, "0"):
+        message = str(payload.get("msg") or "人机验证请求被拒绝")
+        raise ExamBlocked(f"人机验证失败：{message[:120]}")
+    return payload
+
+
+def solve_slide_captcha(shade_data: bytes, cutout_data: bytes) -> tuple[int, float]:
+    """用归一化互相关定位滑块缺口，返回 (x, 匹配分数)。
+
+    这里不依赖 OpenCV：验证码图很小，按固定纵坐标逐列计算 NCC 即可。
+    """
+    if Image is None:
+        raise ExamBlocked("人机验证需要 Pillow，请安装依赖后重试")
+    try:
+        shade_image = Image.open(io.BytesIO(shade_data))
+        cutout_image = Image.open(io.BytesIO(cutout_data))
+        has_alpha = "A" in cutout_image.getbands()
+        shade = shade_image.convert("RGB")
+        cutout = cutout_image.convert("RGBA")
+    except (OSError, ValueError) as exc:
+        raise ExamBlocked("人机验证图片解码失败") from exc
+
+    # 用亮度而不是 alpha 取轮廓：alpha 边缘的抗锯齿会把 y 坐标多算 1~2 像素。
+    # 少数节点返回白底 JPEG，此时按非白像素估计滑块轮廓。
+    if has_alpha:
+        bbox = cutout.convert("L").getbbox()
+    else:
+        bbox = cutout.convert("L").point(lambda value: 255 if value < 245 else 0).getbbox()
+    bbox = bbox or cutout.getbbox()
+    if not bbox:
+        raise ExamBlocked("人机验证图片为空")
+    _x0, y0, _x1, _y1 = bbox
+    top = y0 + 2
+    bottom = min(y0 + 44, cutout.height)
+    if bottom - top < 8 or cutout.width <= 16:
+        raise ExamBlocked("人机验证图片尺寸异常")
+    template = cutout.crop((8, top, min(48, cutout.width), bottom)).convert("RGB")
+
+    strip_top = y0 + 2
+    strip = shade.crop((0, strip_top, shade.width, min(shade.height, y0 + 50))).convert("RGB")
+    tw, th = template.size
+    if strip.width < tw or strip.height < th:
+        raise ExamBlocked("人机验证图片尺寸异常")
+
+    tpl = template.tobytes()
+    n = len(tpl)
+    tmean = sum(tpl) / n
+    tvar = sum((value - tmean) ** 2 for value in tpl)
+    if tvar <= 0:
+        raise ExamBlocked("人机验证图片缺少纹理")
+
+    best_score = -2.0
+    best_x = 0
+    for x in range(0, strip.width - tw + 1):
+        window = strip.crop((x, 0, x + tw, th)).tobytes()
+        wmean = sum(window) / n
+        wvar = sum((value - wmean) ** 2 for value in window)
+        if wvar <= 0:
+            continue
+        covariance = sum(
+            (tpl[index] - tmean) * (window[index] - wmean)
+            for index in range(n)
+        )
+        score = covariance / math.sqrt(tvar * wvar)
+        if score > best_score:
+            best_score = score
+            best_x = x
+    return max(0, min(shade.width - 1, best_x - 5)), best_score
+
+
 class Client:
     def __init__(self, timeout: int = 30, mooc1: str = MOOC1, mooc2: str = MOOC2,
                  passport: str = PASSPORT, sso: str = SSO,
@@ -1071,22 +1178,21 @@ class Client:
         return parse_exam_list(body, course)
 
     def exam_cover(self, course: Course, exam: Exam) -> dict:
-        status, body, headers = self._exam_no_redirect(
-            f"{self.exam_api}{EXAM_COVER_PATH}",
-            {
-                "redo": 1,
-                "taskrefId": exam.exam_id,
-                "courseId": course.course_id,
-                "classId": course.clazz_id,
-                "userId": self.uid,
-                "role": "",
-                "source": 0,
-                "enc_task": exam.enc_task,
-                "cpi": course.cpi,
-                "vx": 0,
-                "examsignal": 1,
-            },
-        )
+        params = {
+            "redo": 1,
+            "taskrefId": exam.exam_id,
+            "courseId": course.course_id,
+            "classId": course.clazz_id,
+            "userId": self.uid,
+            "role": "",
+            "source": 0,
+            "enc_task": exam.enc_task,
+            "cpi": course.cpi,
+            "vx": 0,
+            "examsignal": 1,
+        }
+        url = f"{self.exam_api}{EXAM_COVER_PATH}?" + urllib.parse.urlencode(params)
+        status, body, headers = self._exam_no_redirect(url)
         location = headers.get("Location") or headers.get("location") or ""
         if status in (301, 302, 303, 307, 308):
             if "/exam-ans/exam/phone/look" in location:
@@ -1106,16 +1212,147 @@ class Client:
             raise ExamError("考试封面解析失败（页面结构可能已更新）")
         cover["exam_id"] = exam.exam_id
         cover["title"] = cover["title"] or exam.title
+        cover["referer"] = url
         return cover
+
+    def _captcha_get(self, url: str, params: dict, referer: str = "") -> bytes:
+        query = url + ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
+        headers = {
+            # 验证码凭证会和请求它的客户端绑定；这里必须与开考接口保持同一手机 UA。
+            "User-Agent": _mobile_ua(self.imei),
+            "X-Requested-With": "com.chaoxing.mobile",
+            "Accept": "*/*",
+        }
+        if referer:
+            headers["Referer"] = referer
+        request = urllib.request.Request(query, headers=headers, method="GET")
+        opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(self.jar)
+        )
+        try:
+            response = opener.open(request, timeout=self.timeout)
+            code, raw = response.getcode(), response.read()
+        except urllib.error.HTTPError as exc:
+            code, raw = exc.code, exc.read()
+        except urllib.error.URLError as exc:
+            raise ExamBlocked(f"人机验证网络请求失败：{exc.reason}") from exc
+        if raw[:2] == b"\x1f\x8b":
+            try:
+                raw = gzip.decompress(raw)
+            except OSError:
+                pass
+        self._sync_cookies()
+        if code != 200:
+            raise ExamBlocked(f"人机验证请求失败（HTTP {code}）")
+        return raw
+
+    def solve_exam_captcha(self, cover: dict) -> str:
+        """完成考试封面的滑块验证，返回 captchavalidate。"""
+        if Image is None:
+            raise ExamBlocked("人机验证需要 Pillow，请安装依赖后重试")
+        captcha_id = str(cover.get("captcha_id") or "").strip()
+        if not captcha_id:
+            raise ExamBlocked("考试要求人机验证，但未解析到验证码 ID")
+        referer = str(cover.get("referer") or f"{self.exam_api}{EXAM_COVER_PATH}")
+        last_error = ""
+
+        for attempt in range(CAPTCHA_ATTEMPTS):
+            try:
+                now = int(time.time() * 1000)
+                conf = _captcha_jsonp(self._captcha_get(CAPTCHA_CONF_URL, {
+                    "callback": CAPTCHA_CALLBACK,
+                    "captchaId": captcha_id,
+                    "_": now,
+                }, referer))
+                server_time = int(conf.get("t") or 0)
+                if server_time <= 0:
+                    raise ExamBlocked("人机验证服务未返回时间戳")
+
+                captcha_key = hashlib.md5(
+                    f"{server_time}{uuid.uuid4()}".encode("utf-8")
+                ).hexdigest()
+                iv = hashlib.md5(
+                    f"{captcha_id}slide{now}{uuid.uuid4()}".encode("utf-8")
+                ).hexdigest()
+                token = hashlib.md5(
+                    f"{server_time}{captcha_id}slide{captcha_key}".encode("utf-8")
+                ).hexdigest() + f":{server_time + 300000}"
+
+                image = _captcha_jsonp(self._captcha_get(CAPTCHA_IMAGE_URL, {
+                    "callback": CAPTCHA_CALLBACK,
+                    "captchaId": captcha_id,
+                    "type": "slide",
+                    "version": CAPTCHA_VERSION,
+                    "captchaKey": captcha_key,
+                    "token": token,
+                    "referer": referer,
+                    "iv": iv,
+                    "_": now,
+                }, referer))
+                if image.get("type") not in (None, "slide"):
+                    raise ExamBlocked("该考试的人机验证不是滑块类型，暂不支持")
+                vo = image.get("imageVerificationVo") or {}
+                shade_url = vo.get("shadeImage") or ""
+                cutout_url = vo.get("cutoutImage") or ""
+                if not shade_url or not cutout_url:
+                    raise ExamBlocked("人机验证服务未返回滑块图片")
+                shade_url = urllib.parse.urljoin("https://captcha.chaoxing.com/", shade_url)
+                cutout_url = urllib.parse.urljoin("https://captcha.chaoxing.com/", cutout_url)
+                # 图片资源按普通 GET 获取；不要带考试页 Referer，和官方客户端保持一致。
+                shade_data = self._captcha_get(shade_url, {})
+                cutout_data = self._captcha_get(cutout_url, {})
+                x, _score = solve_slide_captcha(shade_data, cutout_data)
+                result_token = str(image.get("token") or token)
+
+                checked = _captcha_jsonp(self._captcha_get(CAPTCHA_CHECK_URL, {
+                    "callback": CAPTCHA_CALLBACK,
+                    "captchaId": captcha_id,
+                    "type": "slide",
+                    "token": result_token,
+                    "textClickArr": json.dumps([{"x": x}], separators=(",", ":")),
+                    "coordinate": "[]",
+                    "runEnv": 10,
+                    "version": CAPTCHA_VERSION,
+                    "t": "a",
+                    "iv": iv,
+                    "_": int(time.time() * 1000),
+                }, referer))
+                if checked.get("result") in (True, "true"):
+                    raw_extra = checked.get("extraData")
+                    if isinstance(raw_extra, dict):
+                        extra = raw_extra
+                    else:
+                        try:
+                            extra = json.loads(raw_extra or "{}")
+                        except (TypeError, json.JSONDecodeError):
+                            extra = {}
+                    validate = str(extra.get("validate") or "").strip()
+                    if validate:
+                        return validate
+                    last_error = "人机验证通过但未返回凭证"
+                else:
+                    last_error = "滑块位置未通过验证"
+            except ExamBlocked as exc:
+                last_error = str(exc)
+            except OSError as exc:
+                last_error = f"人机验证网络请求失败：{exc}"
+            if attempt + 1 < CAPTCHA_ATTEMPTS:
+                time.sleep(0.15)
+
+        raise ExamBlocked(
+            f"自动人机验证未通过（{last_error or '未知原因'}），"
+            "请重试；多次失败请改用学习通客户端"
+        )
 
     def start_exam(self, course: Course, exam: Exam, code: str = "") -> ExamPaper:
         cover = self.exam_cover(course, exam)
         if cover["need_face"]:
             raise ExamBlocked("该考试要求人脸识别，本地无法处理，请在学习通客户端完成")
-        if cover["need_captcha"]:
-            raise ExamBlocked("该考试要求人机验证码，本地无法处理，请在学习通客户端完成")
         if cover["need_code"] and not code:
             raise ExamCodeRequired("该考试需要考试码，请填写后重试")
+        captcha_validate = ""
+        if cover["need_captcha"]:
+            captcha_validate = self.solve_exam_captcha(cover)
         status, body, headers = self._exam_no_redirect(
             f"{self.exam_api}{EXAM_START_PATH}",
             {
@@ -1130,7 +1367,7 @@ class Client:
                 "faceDetection": 0,
                 "facekey": "",
                 "faceDetectionResult": "",
-                "captchavalidate": "",
+                "captchavalidate": captcha_validate,
                 "jt": 0,
                 "code": code,
             },
@@ -1145,7 +1382,9 @@ class Client:
             if self._is_login_page(body):
                 raise NotLoggedIn("登录已失效，请重新登录")
             error = _exam_error_text(body)
-            if "验证码错误" in error:
+            if "验证码" in error:
+                if cover["need_captcha"]:
+                    raise ExamBlocked("人机验证未通过，请重试；多次失败请改用学习通客户端")
                 raise ExamCodeRequired("考试码错误，请重新输入")
             if "人脸" in error:
                 raise ExamBlocked(error)
@@ -1414,7 +1653,7 @@ class Client:
             return {}
 
     def report_video(self, course: Course, job: Job, dtoken: str, duration: int,
-                     playing: float, dtype: str = "Video") -> tuple[bool, int]:
+                     playing: float, dtype: str = "Video", isdrag: str = "3") -> tuple[bool, int]:
         playing_int = int(max(0, playing))
         duration_int = int(max(0, duration))
         enc = hashlib.md5(
@@ -1431,7 +1670,7 @@ class Client:
             "courseId": course.course_id,
             "jobid": job.jobid,
             "userid": self.uid,
-            "isdrag": "3",
+            "isdrag": isdrag,
             "view": "pc",
             "enc": enc,
             "dtype": dtype,
@@ -1627,7 +1866,9 @@ class Options:
     do_document: bool = True
     do_read: bool = True
     instant: bool = True
-    max_retry: int = 10
+    # 片尾补救仍拿不到确认时：True = 立刻停止整次运行（旧行为）；
+    # False = 跳过这段视频继续后面的章节，结束时汇总待核验项。
+    stop_on_unconfirmed: bool = False
 
     @classmethod
     def from_dict(cls, data: dict) -> "Options":
@@ -1646,6 +1887,7 @@ class Options:
             do_document=bool(data.get("do_document", True)),
             do_read=bool(data.get("do_read", True)),
             instant=bool(data.get("instant", True)),
+            stop_on_unconfirmed=bool(data.get("stop_on_unconfirmed", False)),
         )
 
 
@@ -1665,6 +1907,7 @@ class Runner:
         self.last_percent = 0
         self.stats = {"done": 0, "failed": 0, "skipped": 0, "chapters": 0}
         self.deferred: list[tuple[Course, Point, Job, dict]] = []
+        self.unconfirmed: list[str] = []
 
     # -- 工具 --------------------------------------------------------------
     def _log(self, level: str, text: str) -> None:
@@ -1753,7 +1996,7 @@ class Runner:
                     self._handle_job(course, point, job, info)
                 self.stats["chapters"] += 1
 
-        if self.deferred:
+        if self.deferred and not self.stop_event.is_set():
             self._log("info", f"开始处理排队的 {len(self.deferred)} 个章节测验")
             for course, point, job, _info in self.deferred:
                 if self.stop_event.is_set():
@@ -1766,24 +2009,38 @@ class Runner:
             "failed": self.stats["failed"],
             "skipped": self.stats["skipped"],
             "chapters": self.stats["chapters"],
+            "unconfirmed": len(self.unconfirmed),
             "elapsed": round(time.time() - started),
             "stopped": self.stop_event.is_set(),
         }
+        if self.unconfirmed:
+            self._log("warn", f"待核验视频 {len(self.unconfirmed)} 个，请在学习通章节页确认任务点状态：")
+            for item in self.unconfirmed:
+                self._log("warn", f"  · {item}")
         stopped = self.stop_event.is_set()
         self._report_progress(100.0 if not stopped else self.last_percent,
                               "已停止" if stopped else "已结束")
         self._log(
             "info",
             f"结束：完成 {summary['done']}，失败 {summary['failed']}，"
-            f"跳过章节 {summary['skipped']}，用时 {summary['elapsed']} 秒",
+            f"跳过 {summary['skipped']}，用时 {summary['elapsed']} 秒",
         )
         return summary
 
     def _handle_job(self, course: Course, point: Point, job: Job, info: dict) -> None:
         label = job.name or job.jobid
         if job.type == "video":
-            ok = self._study_video(course, job)
-            self._count(ok)
+            result = self._study_video(course, job)
+            if result is None:
+                self.unconfirmed.append(f"{course.title} · {point.title} · {label}")
+                self._skip()
+                if self.options.stop_on_unconfirmed:
+                    self.stop_event.set()
+                    self._log("warn", "本次运行已停止，请在学习通核验该视频的任务点状态")
+                else:
+                    self._log("warn", "     已跳过该视频，继续后面的章节（结束时统一汇总）")
+            else:
+                self._count(result)
         elif job.type == "document":
             if not self.options.do_document:
                 self._log("dim", f"  - 跳过文档：{label}")
@@ -1822,7 +2079,88 @@ class Runner:
             self.stats["failed"] += 1
         self._notify_stats()
 
-    def _study_video(self, course: Course, job: Job) -> bool:
+    @staticmethod
+    def _anti_cheat(job: Job) -> bool:
+        """课件是否带 ff_1 校验位（按真实节奏上报才可能结算）。
+
+        证据：browser 端上报参数与本地构造逐字段一致（含 enc），
+        唯一差异是浏览器 0→59→119 每约 60 秒一次，而极速模式直接 0→duration，
+        这种跳跃会被判为无效播放：playTime 记满、isPassed 永远 false。
+        所以带这个标记的章节不能用极速模式。
+        """
+        return bool(re.search(r"-ff_1(?:-|$)", job.otherinfo or ""))
+
+    def _recover_flagged(self, course: Course, job: Job, dtoken: str, duration: int) -> bool:
+        """ff_1 章节被「一步报满」弄脏后的解套：重开一条有效序列。
+
+        实测（2026-11-23，同一门课）：
+          · 服务端只认按真实间隔累计的观看；一步从 0 报到 duration 时
+            playTime 会记满、isPassed 永远 false，而且之后的片尾重报也无效。
+          · 从 0 重开、每 60 秒 +60s 上报（首次 isdrag=3，之后 0），
+            实测 15 段全部在这一序列里被判通过，通过点落在 60–240s
+            （占时长 5%–24%，不是固定比例，所以走到 240s 覆盖所有样本）。
+        所以这里走 0/60/120/180/240 五步，任何一步拿到 isPassed 就收工。
+        """
+        name = job.name or job.objectid
+        self._log("dim", f"     该章节带 ff_1 校验，重新累计有效观看：{name}")
+        playing = 0
+        first = True
+        for _step in range(5):
+            if self.stop_event.is_set():
+                return False
+            passed, code = self.client.report_video(
+                course, job, dtoken, duration, playing,
+                isdrag="3" if first else "0",
+            )
+            first = False
+            if passed:
+                self._log("ok", f"     ✔ 重新累计后通过：{name}（{playing}s 有效观看）")
+                return True
+            if code == 403:
+                refreshed = self.client.video_status(job.objectid)
+                if refreshed.get("dtoken"):
+                    dtoken = str(refreshed["dtoken"])
+            if playing >= duration:
+                break
+            if not self._pause(60.0):
+                return False
+            playing = min(duration, playing + 60)
+        return False
+
+    def _recover_tail(self, course: Course, job: Job, dtoken: str, duration: int) -> bool:
+        """片尾待核验时的收尾补救：先报 duration-1，停几秒，再报 duration。
+
+        网页端播到最后几秒服务端才结算任务点；一次「瞬间报满」容易被判成拖拽，
+        进度记上了但 isPassed 一直是 false。这里补一段自然的收尾节奏，
+        给服务端一次重新结算的机会。403 时重新取 dtoken 再来一轮。
+        """
+        name = job.name or job.objectid
+        target = max(0, duration - 1)
+        for _attempt in range(2):
+            if self.stop_event.is_set():
+                return False
+            self._log("dim", f"     片尾未确认，补一次收尾上报（{target}s → {duration}s）")
+            _passed, code = self.client.report_video(course, job, dtoken, duration, target,
+                                                     isdrag="0")
+            if code == 403:
+                refreshed = self.client.video_status(job.objectid)
+                if refreshed.get("dtoken"):
+                    dtoken = str(refreshed["dtoken"])
+            if not self._pause(random.uniform(2.5, 5.0)):
+                return False
+            passed, code = self.client.report_video(course, job, dtoken, duration, duration,
+                                                    isdrag="0")
+            if passed:
+                self._log("ok", f"     ✔ 收尾上报已确认：{name}")
+                return True
+            if code == 403:
+                refreshed = self.client.video_status(job.objectid)
+                if refreshed.get("dtoken"):
+                    dtoken = str(refreshed["dtoken"])
+        self._log("dim", f"     收尾上报未通过：{name}")
+        return False
+
+    def _study_video(self, course: Course, job: Job) -> bool | None:
         name = job.name or job.objectid
         self._log("info", f"  ▶ 视频：{name}")
         status = self.client.video_status(job.objectid)
@@ -1839,12 +2177,38 @@ class Runner:
             return False
 
         play = min(float(job.playtime_ms) / 1000.0, float(duration))
+        if play >= duration:
+            # 续播已经在片尾。带 ff_1 的章节是「被跳满」的脏状态，要重开一条有效序列；
+            # 其它章节可能只是服务端还没结算，补一次收尾上报即可。
+            if self._anti_cheat(job):
+                recovered = self._recover_flagged(course, job, dtoken, duration)
+            else:
+                recovered = self._recover_tail(course, job, dtoken, duration)
+            if recovered:
+                return True
+            if self._anti_cheat(job):
+                self._log(
+                    "warn",
+                    f"     待核验 {name} · 该章节带 ff_1 校验，重新累计后仍未通过；"
+                    "可在学习通网页端播放到本片 15% 左右再试",
+                )
+            else:
+                self._log(
+                    "warn",
+                    f"     待核验 {name} · 续播位置已到片尾（{duration}s / {duration}s），任务点尚未确认",
+                )
+            return None
         if play > 0:
             self._log("dim", f"     已看 {int(play)}s / {duration}s，继续")
 
-        if self.options.instant:
-            self.client.report_video(course, job, dtoken, duration, play)
-            passed, code = self.client.report_video(course, job, dtoken, duration, duration)
+        if self.options.instant and self._anti_cheat(job):
+            # 带 ff_1 的章节一旦「一步报满」，任务点就再也不结算。
+            self._log("dim", "     该章节带 ff_1 校验，跳过极速模式，按真实节奏上报")
+        elif self.options.instant:
+            self.client.report_video(course, job, dtoken, duration, play,
+                                     isdrag="3" if play == 0 else "0")
+            passed, code = self.client.report_video(course, job, dtoken, duration, duration,
+                                                    isdrag="0")
             if passed:
                 self._log("ok", f"     ⚡ 极速完成：{name}")
                 return True
@@ -1853,40 +2217,30 @@ class Runner:
 
         last_tick = time.time()
         last_report = play
-        wait = random.randint(30, 90)
-        end_retries = 0
+        # 带 ff_1 的章节按浏览器的 60 秒节拍走；其它章节维持原来的随机间隔。
+        strict = self._anti_cheat(job)
+        wait = 60 if strict else random.randint(30, 90)
         forbidden = 0
         last_bucket = -1
         while not self.stop_event.is_set():
             now = time.time()
             play = min(float(duration), play + (now - last_tick) * self.options.speed)
             last_tick = now
+            at_end = play >= duration
             bucket = min(9, int(play / duration * 10))
-            if bucket != last_bucket and play < duration:
+            if bucket != last_bucket and not at_end:
                 last_bucket = bucket
                 self._log("dim", f"     {name} {int(play / duration * 100)}%（{int(play)}/{duration}s）")
 
-            if play - last_report >= wait or play >= duration:
-                if play >= duration:
-                    end_retries += 1
-                    if end_retries == 1:
-                        self._log(
-                            "warn",
-                            f"     已到视频结尾但服务器未确认；若反复出现请把倍速降到 1.5×–2×：{name}",
-                        )
-                    if end_retries > self.options.max_retry:
-                        self._log(
-                            "warn",
-                            f"     服务器未确认完成，跳过（可能弹题/人脸，也可能倍速过高）：{name}",
-                        )
-                        return False
-                    if not self._pause(random.uniform(2.5, 6.0)):
-                        return False
-                    if end_retries % 5 == 0:
-                        refreshed = self.client.video_status(job.objectid)
-                        if refreshed.get("dtoken"):
-                            dtoken = str(refreshed["dtoken"])
-                passed, code = self.client.report_video(course, job, dtoken, duration, play)
+            if play - last_report >= wait or at_end:
+                if at_end and not self._pause(random.uniform(2.5, 6.0)):
+                    return False
+                passed, code = self.client.report_video(course, job, dtoken, duration, play,
+                                                        isdrag="0")
+                if at_end and not passed:
+                    reason = "响应未确认任务点完成" if code == 200 else f"服务器返回 HTTP {code}"
+                    self._log("warn", f"     待核验 {name} · {reason}")
+                    return None
                 if code == 403:
                     forbidden += 1
                     if forbidden > 2:
@@ -1898,7 +2252,7 @@ class Runner:
                         dtoken = str(refreshed["dtoken"])
                     continue
                 last_report = play
-                wait = random.randint(30, 90)
+                wait = 60 if strict else random.randint(30, 90)
                 if passed:
                     self._log("ok", f"     ✔ 完成：{name}")
                     return True

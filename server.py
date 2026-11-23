@@ -344,15 +344,25 @@ def diagnose(client: chaoxing.Client) -> dict:
     if not courses:
         return {"passed": False, "report": report}
 
-    course = courses[0]
-    try:
-        points = client.get_points(course)
-    except (chaoxing.ChaoxingError, OSError) as exc:
-        add(f"章节列表（{course.title}）", False, str(exc))
-        return {"passed": False, "report": report}
-    add(f"章节列表（{course.title}）", bool(points), f"{len(points)} 节")
-    if not points:
-        return {"passed": False, "report": report}
+    # 空课程不是故障：继续检查后面的课程，避免把“劳动课 0 节”误报成异常。
+    course = None
+    points: list[chaoxing.Point] = []
+    for candidate in courses:
+        try:
+            candidate_points = client.get_points(candidate)
+        except (chaoxing.ChaoxingError, OSError) as exc:
+            add(f"章节列表（{candidate.title}）", False, str(exc))
+            continue
+        if not candidate_points:
+            add(f"章节列表（{candidate.title}）", True, "0 节（空课程，跳过）")
+            continue
+        course, points = candidate, candidate_points
+        add(f"章节列表（{course.title}）", True, f"{len(points)} 节")
+        break
+    if course is None or not points:
+        if not report or report[-1]["step"] != "章节列表":
+            add("章节列表", False, "所有课程都没有可读取的章节")
+        return {"passed": passed, "report": report}
 
     point = next((item for item in points if not item.finished and not item.locked), points[0])
     try:
@@ -756,6 +766,7 @@ def _brush_worker(client: chaoxing.Client, courses: list[chaoxing.Course], optio
             "failed": runner.stats["failed"],
             "skipped": runner.stats["skipped"],
             "chapters": runner.stats["chapters"],
+            "unconfirmed": len(runner.unconfirmed),
             "elapsed": round(time.time() - started),
             "stopped": STATE.stop_event.is_set(),
         }
@@ -785,7 +796,7 @@ def _brush_worker(client: chaoxing.Client, courses: list[chaoxing.Course], optio
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "ChaoxingHelper/1.1.9"
+    server_version = "ChaoxingHelper/1.1.12"
     protocol_version = "HTTP/1.1"
 
     def log_message(self, *args):  # 静默
@@ -1630,11 +1641,6 @@ class Handler(BaseHTTPRequestHandler):
                 STATE.summary = None
                 session_id = STATE.session_id
             STATE.add_log("info", f"开始任务：{len(courses)} 门课程，{options.speed:g}× 倍速")
-            if options.speed > 3.0:
-                STATE.add_log(
-                    "warn",
-                    f"当前 {options.speed:g}×；若视频到结尾仍不确认完成，请降到 1.5×–2× 后重试",
-                )
             thread = threading.Thread(
                 target=_brush_worker, args=(client, courses, options, session_id), daemon=True,
                 name="brush-worker",

@@ -1,7 +1,7 @@
 """重新打包单文件桌面版 exe。
 
 先安装依赖：
-    python -m pip install pyinstaller pywebview
+    python -m pip install -r requirements-build.txt
 
 然后：
     python build_exe.py

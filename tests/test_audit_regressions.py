@@ -7,6 +7,8 @@ import sys
 import threading
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -22,6 +24,181 @@ class DummyHandler(server.Handler):
     def _error(self, message, status=400):
         self.status = status
         self.payload = {"ok": False, "error": message}
+
+
+def test_diagnose_skips_empty_courses():
+    class FakeClient:
+        uid = "u1"
+        name = "测试"
+
+        def check_login(self):
+            return True
+
+        def get_courses(self):
+            return [
+                chaoxing.Course("empty", "cl1", "cp1", "劳动课（4）"),
+                chaoxing.Course("normal", "cl2", "cp2", "军事理论"),
+            ]
+
+        def get_points(self, course):
+            if course.course_id == "empty":
+                return []
+            return [chaoxing.Point("p1", "第一章", 1, False, False)]
+
+        def get_jobs(self, course, point):
+            return [chaoxing.Job("j1", "video", "视频", "o1")], {}
+
+        def video_status(self, objectid):
+            return {"status": "success", "dtoken": "d1", "duration": 12}
+
+    original_ai = server.ai_from_config
+    server.ai_from_config = lambda config=None: None
+    try:
+        result = server.diagnose(FakeClient())
+    finally:
+        server.ai_from_config = original_ai
+    assert result["passed"], result
+    assert any(
+        row["step"] == "章节列表（劳动课（4））" and row["ok"] and "空课程" in row["detail"]
+        for row in result["report"]
+    ), result
+    assert any(
+        row["step"] == "章节列表（军事理论）" and row["ok"] and "1 节" in row["detail"]
+        for row in result["report"]
+    ), result
+
+
+class TailClient:
+    """续播已在片尾的假客户端：记录每次上报的位置。"""
+
+    def __init__(self, playtime_ms: int, responder):
+        self.video = chaoxing.Job("j1", "video", "测试视频", "o1", playtime_ms=playtime_ms)
+        self.responder = responder
+        self.calls: list[float] = []
+        self.drags: list[str] = []
+        self.status_calls = 0
+
+    def get_points(self, _course):
+        return [chaoxing.Point("p1", "第一章")]
+
+    def get_jobs(self, _course, _point):
+        return [self.video, chaoxing.Job("j2", "read", "阅读")], {}
+
+    def video_status(self, _objectid):
+        self.status_calls += 1
+        return {"status": "success", "dtoken": "dtok", "duration": 12}
+
+    def report_video(self, _course, _job, _dtoken, _duration, playing, dtype="Video", isdrag="3"):
+        self.calls.append(playing)
+        self.drags.append(isdrag)
+        return self.responder(len(self.calls), playing)
+
+    def study_read(self, *_args):
+        return True
+
+
+def _run_tail(client, stop_on_unconfirmed: bool) -> tuple[chaoxing.Runner, dict, list[str]]:
+    messages: list[str] = []
+    runner = chaoxing.Runner(
+        client,
+        chaoxing.Options(instant=True, stop_on_unconfirmed=stop_on_unconfirmed),
+        threading.Event(),
+        lambda _level, message: messages.append(message),
+        lambda *_: None,
+    )
+    with patch.object(runner, "_pause", side_effect=lambda _seconds: True):
+        summary = runner.run([chaoxing.Course("c1", "cl1", "cp1", "测试课程")])
+    return runner, summary, messages
+
+
+def test_unconfirmed_video_tail_is_retried_then_continues():
+    """片尾未通过：先补收尾上报，仍不行就跳过该视频，后面的任务继续跑。"""
+    client = TailClient(12_000, lambda _call, _playing: (False, 200))
+    runner, summary, messages = _run_tail(client, stop_on_unconfirmed=False)
+
+    # 两轮收尾：duration-1 与 duration 各一次
+    assert client.calls == [11, 12, 11, 12], client.calls
+    assert summary["stopped"] is False, summary
+    assert summary["unconfirmed"] == 1, summary
+    assert (summary["done"], summary["skipped"]) == (1, 1), summary
+    assert runner.unconfirmed and "第一章" in runner.unconfirmed[0], runner.unconfirmed
+    assert any("收尾上报" in message for message in messages), messages
+    assert any("待核验" in message and "续播位置已到片尾" in message for message in messages), messages
+
+
+def test_unconfirmed_video_tail_stops_when_configured():
+    """旧行为可用 stop_on_unconfirmed 打开：补救失败后立刻停止整次运行。"""
+    client = TailClient(12_000, lambda _call, _playing: (False, 200))
+    _runner, summary, messages = _run_tail(client, stop_on_unconfirmed=True)
+
+    assert summary["stopped"] is True, summary
+    assert (summary["done"], summary["failed"], summary["skipped"]) == (0, 0, 1), summary
+    assert any("本次运行已停止" in message for message in messages), messages
+
+
+def test_tail_recovery_succeeds_after_settle():
+    """收尾上报第二次就问到了确认：计入完成，不产生待核验项。"""
+    client = TailClient(12_000, lambda call, playing: (playing >= 12 and call >= 2, 200))
+    runner, summary, _messages = _run_tail(client, stop_on_unconfirmed=True)
+
+    assert client.calls == [11, 12], client.calls
+    assert summary["stopped"] is False, summary
+    assert summary["unconfirmed"] == 0, summary
+    assert not runner.unconfirmed, runner.unconfirmed
+
+
+def test_tail_recovery_refreshes_dtoken_on_403():
+    """收尾遇到 403 要重新取 dtoken 再试，而不是直接放弃。"""
+    client = TailClient(12_000, lambda call, _playing: (False, 403) if call <= 2 else (False, 200))
+    _runner, summary, _messages = _run_tail(client, stop_on_unconfirmed=False)
+
+    assert client.status_calls >= 1, client.status_calls
+    assert len(client.calls) == 4, client.calls
+    assert summary["unconfirmed"] == 1, summary
+
+
+def test_flagged_video_tries_recovery_before_giving_up():
+    """带 ff_1 的章节被跳满后，会重开 0/60/120/180 的有效序列，失败才点名。"""
+    client = TailClient(600, lambda _call, _playing: (False, 200))
+    client.video.playtime_ms = 600_000
+    client.video.face_enc = "face-enc"
+    client.video.otherinfo = "nodeId_1-cpi_2-ff_1-v_6"
+    _runner, summary, messages = _run_tail(client, stop_on_unconfirmed=False)
+
+    # 时长 12s：0(isdrag=3) → 12(isdrag=0)，到片尾后停止
+    assert client.calls == [0, 12], client.calls
+    assert client.drags == ["3", "0"], client.drags
+    assert summary["unconfirmed"] == 1, summary
+    assert summary["stopped"] is False, summary
+    assert any("ff_1" in message and "重新累计" in message for message in messages), messages
+
+
+def test_flagged_video_skips_instant_mode():
+    """带 ff_1 时不能走极速模式：一步报满会让任务点永久不结算。"""
+    client = TailClient(0, lambda _call, _playing: (True, 200))
+    client.video.otherinfo = "nodeId_1-cpi_2-ff_1-v_6"
+    client.video.att_duration = "600"
+    messages: list[str] = []
+    runner = chaoxing.Runner(
+        client, chaoxing.Options(instant=True), threading.Event(),
+        lambda _level, message: messages.append(message), lambda *_: None,
+    )
+    with patch.object(runner, "_pause", side_effect=lambda _seconds: True):
+        runner.run([chaoxing.Course("c1", "cl1", "cp1", "测试课程")])
+
+    assert any("跳过极速模式" in message for message in messages), messages
+    assert client.calls and client.calls[0] != 600, client.calls
+
+
+def test_flagged_video_succeeds_when_server_settles():
+    """带抓拍配置但服务端其实会结算：一次收尾就通过，不算待核验。"""
+    client = TailClient(12_000, lambda call, playing: (playing >= 12 and call >= 2, 200))
+    client.video.face_enc = "face-enc"
+    _runner, summary, messages = _run_tail(client, stop_on_unconfirmed=False)
+
+    assert summary["unconfirmed"] == 0, summary
+    assert summary["stopped"] is False, summary
+    assert any("收尾上报已确认" in message for message in messages), messages
 
 
 def test_judgement_empty_is_unknown():
@@ -327,6 +504,14 @@ def test_cache_keys_are_scoped_and_reset():
 
 
 def main() -> None:
+    test_diagnose_skips_empty_courses()
+    test_unconfirmed_video_tail_is_retried_then_continues()
+    test_unconfirmed_video_tail_stops_when_configured()
+    test_tail_recovery_succeeds_after_settle()
+    test_tail_recovery_refreshes_dtoken_on_403()
+    test_flagged_video_tries_recovery_before_giving_up()
+    test_flagged_video_skips_instant_mode()
+    test_flagged_video_succeeds_when_server_settles()
     test_judgement_empty_is_unknown()
     test_missing_saved_answer_is_not_sent_as_none()
     test_non_object_exam_response_restores_paper()

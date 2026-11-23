@@ -16,7 +16,7 @@
   <a href="https://github.com/AkiraNyx/chaoxing-study-helper/releases"><img alt="Release" src="https://img.shields.io/github/v/release/AkiraNyx/chaoxing-study-helper?style=for-the-badge&color=D97757"></a>
   <a href="https://github.com/AkiraNyx/chaoxing-study-helper"><img alt="GitHub" src="https://img.shields.io/github/stars/AkiraNyx/chaoxing-study-helper?style=for-the-badge&color=1F1E1D"></a>
   <img alt="Windows" src="https://img.shields.io/badge/WINDOWS-10%2F11-1F1E1D?style=for-the-badge&logo=windows&logoColor=F0EEE6">
-  <img alt="Single File" src="https://img.shields.io/badge/SINGLE_FILE-35_MB-6B675F?style=for-the-badge">
+  <img alt="Single File" src="https://img.shields.io/badge/SINGLE_FILE-46_MB-6B675F?style=for-the-badge">
 </p>
 
 <details>
@@ -61,7 +61,7 @@
 | 课程列表 | 搜索、多选、每门课显示「X 章 · Y 节 · 任务点 n/m」 |
 | 自动刷课 | 视频、文档、阅读；倍速 1.0×–5.0×，实时日志和两位小数进度 |
 | 独立做题块 | 扫描章节测验、搜索、按完成状态筛选、逐题作答 |
-| 课程考试 | 读取考试列表、答题卡跳题、手动/AI 作答、逐题暂存后交卷 |
+| 课程考试 | 读取考试列表、自动滑块人机验证、答题卡跳题、手动/AI 作答、逐题暂存后交卷 |
 | AI 填题 | 配好 DeepSeek / OpenAI 兼容接口，单选、多选、判断、填空都能填 |
 | 成绩回顾 | 做完的测验保留「回顾」，能看题目和得分 |
 | 字体解密 | 学习通把题目换成加密字体时，自动按字形映射还原 |
@@ -104,7 +104,7 @@ flowchart LR
 | 登录 | 🟢 可用 | 扫码 / 密码 / Cookie 三条路 |
 | 刷课 | 🟢 可用 | 视频、文档、阅读；倍速与进度上报 |
 | 做题扫描 | 🟡 看网络 | 首次要逐条打开测验页，之后读缓存 |
-| 课程考试 | 🟡 部分实测 | 真实账号已读到考试列表与封面；开始/交卷待在可用考试上验证 |
+| 课程考试 | 🟡 部分实测 | 真实账号已读到考试列表与封面；开始/交卷待在可用考试上验证；滑块人机验证已用公开验证码接口验证 |
 | AI 填题 | 🟢 可用 | 需要自己配 Key；模型名以接口为准 |
 | 字体解密 | 🟢 可用 | 生僻字形仍可能漏 |
 | 连接诊断 | 🟢 可用 | 会真的打开一条测验页做检查 |
@@ -120,7 +120,7 @@ flowchart LR
 5. 想考试就切到「考试」→「刷新考试」→「开始」（会立即开始计时）
 6. 卡住了就点右上角「诊断」，它会告诉你哪一层断了
 
-> 不想拉整个仓库？直接去 [Releases](https://github.com/AkiraNyx/chaoxing-study-helper/releases) 下载 `chaoxing-study-helper-v1.1.9.exe`。
+> 不想拉整个仓库？直接去 [Releases](https://github.com/AkiraNyx/chaoxing-study-helper/releases) 下载 `chaoxing-study-helper-v1.1.12.exe`。
 
 > 首次启动会解包到临时目录，慢一两秒是正常的。SmartScreen 拦截就点「更多信息 → 仍要运行」。
 
@@ -141,7 +141,7 @@ Cookie 默认只在内存里；勾选「记住登录状态」后，会用 Window
 - 文档 / 阅读走对应任务接口
 - 章节测验一律排到最后，交给「做题」块，不再混在视频中间
 
-遇到 403、进度不涨、视频带人脸/弹题，工具会记录失败并提示，不会硬刚风控。倍速建议放在 2.0× 左右；更高倍速上报更密，风控风险也更大。
+视频到达片尾但任务点未确认时，助手会先补一次收尾上报（`duration-1` → 停几秒 → `duration`）；仍不通过就跳过该视频、继续后面的章节，并在结束时汇总「待核验」清单。想恢复旧的「立刻停止整次运行」，在 options 里传 `stop_on_unconfirmed: true`。
 
 ## 做题是怎么做的
 
@@ -156,12 +156,12 @@ Cookie 默认只在内存里；勾选「记住登录状态」后，会用 Window
 ## 考试是怎么做的
 
 1. 在「考试」页点「刷新考试」，按勾选课程读取考试列表
-2. 点「开始」会先读考试封面：已完成、需要人脸/人机验证、需要考试码都会提前提示
-3. 确认进入后才开始计时，整卷题目一次拉取，右侧答题卡可以跳题
+2. 点「开始」会先读考试封面：已完成、人脸识别、考试码会提前提示；滑块人机验证会尝试自动完成
+3. 确认进入后先处理人机验证，再开始计时；整卷题目一次拉取，右侧答题卡可以跳题
 4. 可以手动作答，也可以点「AI 填这题」
 5. 翻题/交卷会自动暂存；手动交卷要点两次确认，倒计时归零会自动交卷
 
-只覆盖普通课程考试。人脸识别、人机验证、只允许 PC 客户端的考试，以及连线/排序/资料题等特殊题型，仍需要在学习通客户端完成。
+只覆盖普通课程考试。人脸识别、只允许 PC 客户端的考试，以及连线/排序/资料题等特殊题型，仍需要在学习通客户端完成；滑块人机验证若连续失败，也会提示改用客户端，不会强行开始考试。
 
 如果封面提示「章节任务点未完成 100%」，先把「刷课」跑完，再回来刷新考试。
 
@@ -192,13 +192,15 @@ API Key 以明文保存在本机的 `%APPDATA%\学习通刷课\config.json`，�
 
 ## 已知边界
 
-- **风控 / 进度不确认**：倍速越高越容易出现 403，或视频到结尾但服务器仍不确认完成；遇到就降到 1.5×–2× 后重试
+- **片尾状态待核验时**，请在学习通章节页查看视频自己的任务点状态。该视频会计入本次运行的跳过数。
+- **带 `ff_1` 校验的课件**（章节卡片 `otherInfo` 里出现 `-ff_1-`）：这类任务点只认「按真实间隔累计的观看」。用极速模式一步报满，`playTime` 会记满但 `isPassed` 永远是 false，任务点从此锁死。助手对这类章节会禁用极速模式、按 60 秒节拍上报；已锁死的章节会从 0 重开一条 `0→60→120→180→240` 的序列解套（实测 15 段课全部在 60–240 秒处被判通过）。
 - **Windows 11 闪屏**：默认使用 WebView2 硬件加速；出现白色残影时在「设置 → 图形兼容模式」开启兼容模式并重启。命令行 `--safe-graphics` / `--gpu` 仍可强制覆盖
-- **验证码 / 人脸**：本地无法自动处理，需要手动过
+- **登录验证码 / 人脸**：账号密码触发风控时需要手动处理，换扫码或 Cookie
+- **考试人脸识别**：本地无法处理，必须使用学习通客户端
 - **测验页改版**：提交字段和 DOM 可能变；真实环境第一次用，建议先拿一道不重要的测验试
 - **字体映射缺口**：生僻字形可能没覆盖，会显示个别乱码
 - **已完成测验**：只能回顾，不能重复提交
-- **考试限制**：人脸识别、人机验证、PC 客户端限制与特殊题型无法自动处理；交卷前请自行检查答案
+- **考试限制**：人脸识别、PC 客户端限制与特殊题型无法自动处理；滑块人机验证会自动尝试，连续失败时请改用客户端；交卷前请自行检查答案
 
 ## 目录
 
@@ -238,6 +240,9 @@ python tests/test_quiz_api.py
 # 考试列表 / 封面 / 开始 / 逐题暂存 / 交卷
 python tests/test_exam.py
 
+# 考试滑块验证码：JSONP、图片定位、开始参数
+python tests/test_captcha.py
+
 # 审查回归：会话隔离、答案语义、缓存身份、失败回滚
 python tests/test_audit_regressions.py
 
@@ -247,7 +252,7 @@ python demo_exam.py
 # 自检
 python server.py --selftest
 
-# 安装打包依赖后重新打包
+# 安装打包依赖后重新打包（含考试验证码所需的 Pillow）
 python -m pip install -r requirements-build.txt
 python build_exe.py
 ```
@@ -255,7 +260,7 @@ python build_exe.py
 ## 常见问题
 
 <details>
-<summary><b>展开：登录、99%、端口、AI 连接……</b></summary>
+<summary><b>登录、视频待核验、端口和 AI 连接</b></summary>
 
 **登录提示验证码？**  
 换扫码或 Cookie。账号密码触发风控时，本地处理不了验证码。
@@ -263,8 +268,9 @@ python build_exe.py
 **课程列表空的？**  
 先确认这学期有课、课程已开始；再检查 Cookie 是否过期。
 
-**视频卡 99%？**  
-多半带弹题或人脸。去网页手动过这一节，再回来刷剩下的。
+**视频显示待核验？**
+
+在学习通查看该视频的任务点状态，并按课程页面提示完成观看或互动。
 
 **端口被占用？**  
 软件优先使用本地 8765；被占用时会自动顺延到 8765–8784。关掉占用端口的程序，或退出另一个已经开着的实例。
