@@ -19,10 +19,12 @@ _mutex_handle = None
 
 
 class WindowApi:
-    """暴露给前端的最小化 / 最大化 / 关闭。"""
+    """暴露给前端的最小化 / 最大化 / 关闭 / 拖拽。"""
 
     def __init__(self):
         self._window = None
+        self._drag_hwnd = None
+        self._drag_offset = None
 
     def minimize(self) -> None:
         if self._window:
@@ -55,6 +57,57 @@ class WindowApi:
         if isinstance(url, str) and url.startswith(("https://", "http://")):
             webbrowser.open(url)
 
+    # ---- 无边框窗口拖拽 -------------------------------------------------
+    # pywebview 6.2.1 的 winforms.move() 把 cx/cy 传成 None，SetWindowPos 会抛
+    # ArgumentError（见日志），自带拖拽在 Windows 上完全不动。这里按光标抓取
+    # 偏移自己移动窗口：全程用物理像素，不受 DPI 缩放影响。
+    def begin_drag(self) -> None:
+        """记录按下位置相对窗口左上角的偏移。"""
+        self._drag_hwnd = None
+        self._drag_offset = None
+        if not self._window:
+            return
+        try:
+            hwnd = ctypes.c_void_p(int(self._window.native.Handle.ToInt64()))
+            if not hwnd.value:
+                return
+            rect = _RECT()
+            if not _user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                return
+            point = _POINT()
+            if not _user32.GetCursorPos(ctypes.byref(point)):
+                return
+            self._drag_hwnd = hwnd
+            self._drag_offset = (point.x - rect.left, point.y - rect.top)
+        except Exception:  # noqa: BLE001
+            self._drag_hwnd = None
+            self._drag_offset = None
+
+    def drag_to_cursor(self) -> None:
+        """窗口左上角跟随光标，保持按下时的相对位置。"""
+        if not self._window or self._drag_hwnd is None or self._drag_offset is None:
+            return
+        try:
+            point = _POINT()
+            if not _user32.GetCursorPos(ctypes.byref(point)):
+                return
+            offset_x, offset_y = self._drag_offset
+            _user32.SetWindowPos(
+                self._drag_hwnd,
+                None,
+                point.x - offset_x,
+                point.y - offset_y,
+                0,
+                0,
+                0x0001 | 0x0004,  # SWP_NOSIZE | SWP_NOZORDER
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    def end_drag(self) -> None:
+        self._drag_hwnd = None
+        self._drag_offset = None
+
 
 def _alert(message: str) -> None:
     try:
@@ -78,6 +131,10 @@ class _RECT(ctypes.Structure):
     ]
 
 
+class _POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
 class _MONITORINFO(ctypes.Structure):
     _fields_ = [
         ("cbSize", ctypes.c_ulong),
@@ -91,6 +148,7 @@ _user32 = ctypes.windll.user32
 _user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(_RECT)]
 _user32.MonitorFromWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
 _user32.MonitorFromWindow.restype = ctypes.c_void_p
+_user32.GetCursorPos.argtypes = [ctypes.POINTER(_POINT)]
 _user32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.POINTER(_MONITORINFO)]
 _user32.SetWindowPos.argtypes = [
     ctypes.c_void_p, ctypes.c_void_p,
@@ -183,6 +241,8 @@ def main() -> None:
             min_size=(1024, 720),
             background_color="#F0EEE6",
             frameless=True,
+            # 拖拽由前端 .app-drag-region 调 WindowApi.begin_drag 接管，
+            # pywebview 自带的 easy_drag 在 6.x 上是坏的（见 begin_drag 注释）。
             easy_drag=False,
             js_api=api,
             hidden=hidden,

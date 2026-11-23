@@ -108,6 +108,9 @@ function setView(name) {
     const section = $(`#view-${view}`);
     if (section) section.hidden = view !== name;
   });
+  // 每个界面从顶部开始，切页后不会停在上一页的滚动位置。
+  const scroller = $("#scrollArea");
+  if (scroller) scroller.scrollTop = 0;
   if (name === "quiz" && !state.quizLoaded) loadQuizzes();
   if (name === "exam" && !state.examLoaded) loadExams();
   if (name === "settings") {
@@ -374,6 +377,12 @@ function updateQuizProgress() {
   $("#quizRingText").textContent = `${Math.round(percent)}%`;
 }
 
+function syncQuizStepButtons() {
+  const total = quizView.questions.length;
+  $("#quizPrev").disabled = quizView.index <= 0;
+  $("#quizNext").disabled = total === 0 || quizView.index >= total - 1;
+}
+
 function renderQuizQuestion() {
   const question = quizView.questions[quizView.index];
   if (!question) return;
@@ -439,6 +448,7 @@ function renderQuizQuestion() {
   } else {
     question.options.forEach((text, index) => addChoice(quizOptionLetter(text, index), text));
   }
+  syncQuizStepButtons();
 }
 
 function quizLog(level, text) {
@@ -918,6 +928,12 @@ function syncExamAnswer() {
   persistExamAnswers();
 }
 
+function syncExamStepButtons() {
+  const total = state.examPaper ? state.examPaper.questions.length : 0;
+  $("#examPrev").disabled = state.examIndex <= 0;
+  $("#examNext").disabled = total === 0 || state.examIndex >= total - 1;
+}
+
 function renderExamQuestion() {
   const paper = state.examPaper;
   if (!paper) return;
@@ -1007,6 +1023,7 @@ function renderExamQuestion() {
   }
   renderExamSheet();
   updateExamProgress();
+  syncExamStepButtons();
 }
 
 function renderExamSheet() {
@@ -1633,6 +1650,50 @@ function setupDesktop() {
 
 function desktopApi() {
   return window.pywebview && window.pywebview.api;
+}
+
+/** 按住标题栏拖动窗口。pywebview 6.x 的 winforms.move 传了 cx/cy=None，
+ *  SetWindowPos 直接抛 ArgumentError，自带拖拽在 Windows 上是坏的，
+ *  这里改成由 Python 侧按光标抓取偏移移动窗口。 */
+function bindWindowDrag(region) {
+  region.addEventListener("mousedown", (event) => {
+    if (event.button !== 0) return;
+    if (event.target.closest("button, a, input, select, textarea, [contenteditable]")) return;
+    const api = desktopApi();
+    if (!api || !api.begin_drag || !api.drag_to_cursor) return;
+    let active = true;
+    const onMove = (moveEvent) => {
+      if (!active) return;
+      if (moveEvent.buttons === 0) return finishDrag();
+      moveEvent.preventDefault();
+      api.drag_to_cursor();
+    };
+    const finishDrag = () => {
+      if (!active) return;
+      active = false;
+      window.removeEventListener("mousemove", onMove, true);
+      window.removeEventListener("mouseup", finishDrag, true);
+      document.body.classList.remove("window-dragging");
+      if (api.end_drag) api.end_drag();
+    };
+    window.addEventListener("mousemove", onMove, true);
+    window.addEventListener("mouseup", finishDrag, true);
+    document.body.classList.add("window-dragging");
+    // 最大化时先还原再跟手，和原生标题栏的行为一致。
+    const restore = state.maximized && api.restore ? api.restore() : null;
+    const startDrag = () => {
+      if (active) api.begin_drag();
+    };
+    if (restore) {
+      state.maximized = false;
+      updateMaxButton();
+      if (typeof restore.then === "function") restore.then(startDrag, startDrag);
+      else startDrag();
+    } else {
+      startDrag();
+    }
+  });
+  region.addEventListener("dblclick", toggleMaximize);
 }
 
 async function toggleMaximize() {
@@ -2480,9 +2541,7 @@ function bindUi() {
   });
   $("#clearLoginBtn").addEventListener("click", clearSavedLogin);
 
-  $$(".pywebview-drag-region").forEach((region) => {
-    region.addEventListener("dblclick", toggleMaximize);
-  });
+  $$(".app-drag-region").forEach(bindWindowDrag);
 
   $("#refreshBtn").addEventListener("click", () => loadCourses({ animate: true }));
   $("#diagnoseBtn").addEventListener("click", runDiagnose);

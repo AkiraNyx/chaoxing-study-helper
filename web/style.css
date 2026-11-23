@@ -82,6 +82,7 @@
   --warn: #a86f14;
   --bad: #a94a44;
   --radius: 14px;
+  --app-pad-top: 34px;
   --serif: "Paper Serif", "Noto Serif SC", "Songti SC", "STSong",
     Georgia, serif;
   --sans: "Paper Sans", "MiSans", "Noto Sans SC", "Microsoft YaHei UI",
@@ -117,6 +118,8 @@ body {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  /* 始终预留滚动条位置，切到内容较短的界面时侧边栏不会横向跳动。 */
+  scrollbar-gutter: stable;
 }
 
 body::before {
@@ -224,7 +227,8 @@ body::before {
 }
 .top-actions { display: flex; align-items: center; gap: 10px; }
 .topbar-drag { flex: 1; align-self: stretch; min-width: 16px; }
-.pywebview-drag-region { user-select: none; }
+.app-drag-region { user-select: none; -webkit-user-select: none; }
+body.window-dragging { user-select: none; -webkit-user-select: none; }
 
 .window-controls {
   display: none;
@@ -338,7 +342,7 @@ body.desktop .window-controls { display: flex; }
   z-index: 1;
   max-width: 1120px;
   margin: 0 auto;
-  padding: 34px clamp(20px, 4vw, 48px) 80px;
+  padding: var(--app-pad-top) clamp(20px, 4vw, 48px) 80px;
 }
 
 .login {
@@ -1069,7 +1073,7 @@ input[type="range"]::-moz-range-thumb {
 .app-main { min-width: 0; }
 .sidebar {
   position: sticky;
-  top: 24px;
+  top: var(--app-pad-top);
   display: flex;
   flex-direction: column;
   padding: 14px;
