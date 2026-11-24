@@ -2209,6 +2209,7 @@ function summarize(summary) {
   if (summary.failed) parts.push(`失败 ${summary.failed}`);
   if (summary.skipped) parts.push(`跳过 ${summary.skipped}`);
   if (summary.unconfirmed) parts.push(`待核验 ${summary.unconfirmed}`);
+  if (summary.manual) parts.push(`需人工 ${summary.manual}`);
   parts.push(`用时 ${fmtTime(summary.elapsed)}`);
   toast(parts.join(" · "), summary.failed ? "warn" : "ok");
 }

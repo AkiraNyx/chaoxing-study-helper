@@ -927,6 +927,8 @@ class Client:
         self.name = ""
         self.fid = "-1"
         self.imei = secrets.token_hex(16)
+        # 测验卡片不带 isPassed 字段，完成状态要单独查；按 jobid 缓存，避免重复请求。
+        self.work_completed: dict[str, bool] = {}
 
     # -- 基础 --------------------------------------------------------------
     def set_cookie_string(self, text: str) -> None:
@@ -1599,6 +1601,7 @@ class Client:
         jobs: list[Job] = []
         info: dict = {}
         seen = set()
+        empty_pages = 0
         for num in range(0, 10):
             code, body = self.request(
                 "GET", f"{self.mooc1}/mooc-ans/knowledge/cards",
@@ -1627,7 +1630,13 @@ class Client:
             info.update(data.get("defaults") or {})
             attachments = data.get("attachments") or []
             if not attachments:
-                break
+                # 空卡片不等于「没有任务点」：有的章节第 0 张是空导学卡，
+                # 视频在 num=1、测验在 num=2。连续两张空卡才认为到头了。
+                empty_pages += 1
+                if empty_pages >= 2:
+                    break
+                continue
+            empty_pages = 0
             added = 0
             for card in attachments:
                 job = _job_from_card(card)
@@ -1638,6 +1647,18 @@ class Client:
                 added += 1
             if added == 0 and num > 0:
                 break
+        # 测验卡片里没有 isPassed 字段，必须单独查「是否已提交」，
+        # 否则已经交过卷的章节测验会被一直当成待完成。
+        for job in jobs:
+            if job.type not in {"workid", "work"} or job.is_passed:
+                continue
+            if job.jobid not in self.work_completed:
+                try:
+                    self.work_completed[job.jobid] = self.is_work_completed(
+                        course, job, info)
+                except ChaoxingError:
+                    self.work_completed[job.jobid] = False
+            job.is_passed = bool(self.work_completed[job.jobid])
         return jobs, info
 
     # -- 视频 --------------------------------------------------------------
@@ -1908,6 +1929,7 @@ class Runner:
         self.stats = {"done": 0, "failed": 0, "skipped": 0, "chapters": 0}
         self.deferred: list[tuple[Course, Point, Job, dict]] = []
         self.unconfirmed: list[str] = []
+        self.manual: list[str] = []
 
     # -- 工具 --------------------------------------------------------------
     def _log(self, level: str, text: str) -> None:
@@ -1983,6 +2005,14 @@ class Runner:
                 if info.get("notOpen"):
                     self._log("warn", f"  章节未开放：{point.title}")
                     continue
+                if not jobs:
+                    # 结构页把这一节算成有待完成任务点，但卡片页根本没下发任务点
+                    # （常见于视频已下架/被撤掉的节）。这里不能记完成，否则界面上
+                    # 一路 ✔ 过去、课程进度却一动不动。
+                    self._log("warn", f"  服务器未下发任务点（该节可能已下架）：{point.title}")
+                    self.manual.append(f"{course.title} · {point.title} · 无任务点")
+                    self._skip()
+                    continue
                 pending = [job for job in jobs if not job.is_passed]
                 if not pending:
                     self._log("ok", f"  ✔ 已完成：{point.title}")
@@ -2001,7 +2031,8 @@ class Runner:
             for course, point, job, _info in self.deferred:
                 if self.stop_event.is_set():
                     break
-                self._log("warn", f"  章节测验暂未自动作答，请稍后手动完成：{course.title} · {point.title}")
+                self._log("warn", f"  章节测验暂未自动作答，请到「做题」页处理：{course.title} · {point.title}")
+                self.manual.append(f"{course.title} · {point.title} · 章节测验")
                 self._skip()
 
         summary = {
@@ -2010,12 +2041,17 @@ class Runner:
             "skipped": self.stats["skipped"],
             "chapters": self.stats["chapters"],
             "unconfirmed": len(self.unconfirmed),
+            "manual": len(self.manual),
             "elapsed": round(time.time() - started),
             "stopped": self.stop_event.is_set(),
         }
         if self.unconfirmed:
             self._log("warn", f"待核验视频 {len(self.unconfirmed)} 个，请在学习通章节页确认任务点状态：")
             for item in self.unconfirmed:
+                self._log("warn", f"  · {item}")
+        if self.manual:
+            self._log("warn", f"需人工处理 {len(self.manual)} 项：")
+            for item in self.manual:
                 self._log("warn", f"  · {item}")
         stopped = self.stop_event.is_set()
         self._report_progress(100.0 if not stopped else self.last_percent,
@@ -2177,6 +2213,7 @@ class Runner:
             return False
 
         play = min(float(job.playtime_ms) / 1000.0, float(duration))
+        rewound = False
         if play >= duration:
             # 续播已经在片尾。带 ff_1 的章节是「被跳满」的脏状态，要重开一条有效序列；
             # 其它章节可能只是服务端还没结算，补一次收尾上报即可。
@@ -2186,25 +2223,21 @@ class Runner:
                 recovered = self._recover_tail(course, job, dtoken, duration)
             if recovered:
                 return True
-            if self._anti_cheat(job):
-                self._log(
-                    "warn",
-                    f"     待核验 {name} · 该章节带 ff_1 校验，重新累计后仍未通过；"
-                    "可在学习通网页端播放到本片 15% 左右再试",
-                )
-            else:
-                self._log(
-                    "warn",
-                    f"     待核验 {name} · 续播位置已到片尾（{duration}s / {duration}s），任务点尚未确认",
-                )
-            return None
+            # 两次补报都救不回来时，退到片头按正常节奏重看。
+            # 实测（影视鉴赏 10.2）：服务端要看到足够多「新的有效进度」才结算 isPassed，
+            # 从 20% 重看到 60% 才通过；只在片尾补报永远不会通过。
+            self._log("dim", f"     片尾未结算（{duration}s / {duration}s），退回片头重看一遍")
+            play = 0.0
+            rewound = True
+            # 第一帧按「拖回片头」上报，和网页端重新播放的行为一致。
+            self.client.report_video(course, job, dtoken, duration, 0, isdrag="3")
         if play > 0:
             self._log("dim", f"     已看 {int(play)}s / {duration}s，继续")
 
         if self.options.instant and self._anti_cheat(job):
             # 带 ff_1 的章节一旦「一步报满」，任务点就再也不结算。
             self._log("dim", "     该章节带 ff_1 校验，跳过极速模式，按真实节奏上报")
-        elif self.options.instant:
+        elif self.options.instant and not rewound:
             self.client.report_video(course, job, dtoken, duration, play,
                                      isdrag="3" if play == 0 else "0")
             passed, code = self.client.report_video(course, job, dtoken, duration, duration,
@@ -2239,6 +2272,17 @@ class Runner:
                                                         isdrag="0")
                 if at_end and not passed:
                     reason = "响应未确认任务点完成" if code == 200 else f"服务器返回 HTTP {code}"
+                    if not rewound and duration > 0:
+                        # 快看到片尾也没结算：这类「片尾脏状态」只有在服务端看到足够多的
+                        # 新进度后才会把 isPassed 置真（实测 60%–70% 才通过）。
+                        # 所以退回片头按正常节奏重看一遍，而不是直接判待核验。
+                        self._log("dim", f"     片尾未结算（{reason}），退回片头按正常节奏重看：{name}")
+                        self.client.report_video(course, job, dtoken, duration, 0, isdrag="3")
+                        play = 0.0
+                        last_report = 0.0
+                        last_bucket = -1
+                        rewound = True
+                        continue
                     self._log("warn", f"     待核验 {name} · {reason}")
                     return None
                 if code == 403:
