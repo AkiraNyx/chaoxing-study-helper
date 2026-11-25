@@ -537,6 +537,44 @@ def _ask_question(ai: AIClient, question) -> str:
     return _normalize_quiz_answer(question, reply)
 
 
+def _video_quiz_answer(question: dict) -> str:
+    """视频课中题的作答回调，返回提交用的选项串（"A,B,C"）。
+
+    AI 不可用或答不出来时返回空串，Runner 会退回第一个选项，至少把题点过掉。
+    """
+    ai = ai_from_config()
+    if ai is None:
+        return ""
+    raw_options = [item for item in (question.get("options") or []) if isinstance(item, dict)]
+    type_text = str(question.get("questionType") or "")
+    if "多选" in type_text:
+        kind = "multiple"
+    elif "判断" in type_text:
+        kind = "judgement"
+    else:
+        kind = "single"
+    probe = SimpleNamespace(
+        id=str(question.get("resourceId") or ""),
+        type=kind,
+        title=str(question.get("description") or ""),
+        options=[f"{item.get('name')}. {item.get('description')}" for item in raw_options],
+    )
+    try:
+        reply = _ask_question(ai, probe)
+    except AIError:
+        return ""
+    if kind == "judgement":
+        truthy = str(reply).strip().lower() in {"true", "t", "1", "对", "正确", "是", "√"}
+        for item in raw_options:
+            text = str(item.get("description") or "")
+            affirmative = any(word in text for word in ("正确", "对", "是", "√"))
+            if affirmative == truthy:
+                return str(item.get("name") or "")
+        return ""
+    letters = sorted({ch for ch in re.sub(r"[^A-Za-z]", "", str(reply)).upper()})
+    return ",".join(letters)
+
+
 def _exam_payload(paper: chaoxing.ExamPaper) -> dict:
     return {
         "exam_id": paper.exam_id,
@@ -758,7 +796,8 @@ def _brush_worker(client: chaoxing.Client, courses: list[chaoxing.Course], optio
             }
 
     started = time.time()
-    runner = chaoxing.Runner(client, options, STATE.stop_event, emit, progress, on_stats)
+    runner = chaoxing.Runner(client, options, STATE.stop_event, emit, progress, on_stats,
+                             answer_ai=_video_quiz_answer)
 
     def partial(error: Optional[str] = None) -> dict:
         summary = {
@@ -796,7 +835,7 @@ def _brush_worker(client: chaoxing.Client, courses: list[chaoxing.Course], optio
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "ChaoxingHelper/1.1.14"
+    server_version = "ChaoxingHelper/1.1.15"
     protocol_version = "HTTP/1.1"
 
     def log_message(self, *args):  # 静默

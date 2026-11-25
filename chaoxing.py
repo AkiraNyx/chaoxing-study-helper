@@ -286,6 +286,7 @@ class Job:
     face_enc: str = ""
     is_passed: bool = False
     enc: str = ""
+    mid: str = ""
 
 
 @dataclass
@@ -546,6 +547,7 @@ def _job_from_card(card: dict) -> Optional[Job]:
         face_enc=str(card.get("videoFaceCaptureEnc") or ""),
         is_passed=_as_bool(passed),
         enc=str(card.get("enc") or ""),
+        mid=str(card.get("mid") or ""),
     )
 
 
@@ -1722,6 +1724,71 @@ class Client:
                 return False, code
         return False, code
 
+    # -- 课中题（视频里弹出的互动题） ---------------------------------------
+    def video_questions(self, course: Course, job: Job, info: dict) -> list[dict]:
+        """取视频里挂着课中题。视频没挂题时返回空列表。
+
+        initdatawithviewerV2 返回形如
+        [{"style": "InteractiveQuiz", "datas": [{"resourceId": ..., "startTime": 290.0,
+          "description": "...", "options": [{"name": "A", ...}], "answered": false,
+          "validationUrl2": ".../question/quiz-validation", "memberinfo": "..."}]}]
+        """
+        if not job.mid:
+            return []
+        code, body = self.request(
+            "GET", f"{self.mooc1}/mooc-ans/richvideo/initdatawithviewerV2",
+            params={
+                "mid": job.mid,
+                "objectid": job.objectid,
+                "clazzid": course.clazz_id,
+                "courseid": course.course_id,
+                "knowledgeid": str(info.get("knowledgeid") or ""),
+                "cpi": course.cpi,
+                "ut": "s",
+            },
+            headers={"Referer": f"{self.mooc1}/"},
+        )
+        if code != 200:
+            return []
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError:
+            return []
+        questions: list[dict] = []
+        for block in data if isinstance(data, list) else []:
+            for item in (block or {}).get("datas") or []:
+                if isinstance(item, dict) and item.get("description"):
+                    questions.append(item)
+        questions.sort(key=lambda q: float(q.get("startTime") or 0))
+        return questions
+
+    def answer_video_question(self, course: Course, question: dict, answer: str) -> bool:
+        """提交课中题答案。answer 是选项字母用逗号连接，例如 "A,B,C"。"""
+        url = str(question.get("validationUrl2") or "")
+        if not url or not answer:
+            return False
+        sep = "&" if "?" in url else "?"
+        code, body = self.request(
+            "POST", f"{url}{sep}classid={course.clazz_id}",
+            data={
+                "eventid": str(question.get("resourceId") or ""),
+                "memberinfo": str(question.get("memberinfo") or ""),
+                "answerContent": answer,
+            },
+            headers={
+                "X-Requested-With": "XMLHttpRequest",
+                "Origin": self.mooc1,
+                "Referer": f"{self.mooc1}/",
+            },
+        )
+        if code != 200:
+            return False
+        try:
+            result = json.loads(body)
+        except json.JSONDecodeError:
+            return False
+        return bool(result.get("isRight"))
+
     # -- 文档 / 阅读 -------------------------------------------------------
     def _study_ok(self, code: int, body: str) -> bool:
         """文档/阅读接口不能只看 HTTP 200：登录页或 status:false 也要算失败。"""
@@ -1918,13 +1985,16 @@ class Runner:
     def __init__(self, client: Client, options: Options, stop_event: threading.Event,
                  emit: Callable[[str, str], None],
                  progress: Callable[[int, str], None],
-                 on_stats: Optional[Callable[[dict], None]] = None):
+                 on_stats: Optional[Callable[[dict], None]] = None,
+                 answer_ai: Optional[Callable[[dict], str]] = None):
         self.client = client
         self.options = options
         self.stop_event = stop_event
         self.emit = emit
         self.progress = progress
         self.on_stats = on_stats
+        # 课中题的作答回调：入参是题目 dict，返回 "A,B,C" 这样的选项串。
+        self.answer_ai = answer_ai
         self.last_percent = 0
         self.stats = {"done": 0, "failed": 0, "skipped": 0, "chapters": 0}
         self.deferred: list[tuple[Course, Point, Job, dict]] = []
@@ -2066,7 +2136,7 @@ class Runner:
     def _handle_job(self, course: Course, point: Point, job: Job, info: dict) -> None:
         label = job.name or job.jobid
         if job.type == "video":
-            result = self._study_video(course, job)
+            result = self._study_video(course, job, info)
             if result is None:
                 self.unconfirmed.append(f"{course.title} · {point.title} · {label}")
                 self._skip()
@@ -2196,7 +2266,43 @@ class Runner:
         self._log("dim", f"     收尾上报未通过：{name}")
         return False
 
-    def _study_video(self, course: Course, job: Job) -> bool | None:
+    def _answer_due_questions(self, course: Course, questions: list[dict],
+                              answered: set, play: float) -> None:
+        """把已经播到的课中题答掉。答完标记，避免重复提交。"""
+        for question in questions:
+            rid = question.get("resourceId")
+            if rid is None or rid in answered:
+                continue
+            try:
+                due = float(question.get("startTime") or 0)
+            except (TypeError, ValueError):
+                due = 0.0
+            if due > play:
+                continue
+            title = str(question.get("description") or "").strip()[:40]
+            answer = ""
+            if self.answer_ai is not None:
+                try:
+                    answer = str(self.answer_ai(question) or "")
+                except Exception:  # noqa: BLE001 - 作答回调不能打断刷课
+                    answer = ""
+            if not answer:
+                options = question.get("options") or []
+                first = options[0].get("name") if options and isinstance(options[0], dict) else ""
+                answer = str(first or "")
+            if not answer:
+                continue
+            answered.add(rid)
+            try:
+                ok = self.client.answer_video_question(course, question, answer)
+            except ChaoxingError:
+                ok = False
+            if ok:
+                self._log("ok", f"     ✔ 课中题已通过：{title}（{answer}）")
+            else:
+                self._log("warn", f"     课中题未通过：{title}（{answer}）")
+
+    def _study_video(self, course: Course, job: Job, info: dict) -> bool | None:
         name = job.name or job.objectid
         self._log("info", f"  ▶ 视频：{name}")
         status = self.client.video_status(job.objectid)
@@ -2213,6 +2319,20 @@ class Runner:
             return False
 
         play = min(float(job.playtime_ms) / 1000.0, float(duration))
+        # 有课中题的视频：题不答，进度过了题点服务端也不算通过。
+        questions: list[dict] = []
+        if hasattr(self.client, "video_questions"):
+            try:
+                questions = self.client.video_questions(course, job, info)
+            except ChaoxingError:
+                questions = []
+        answered = {q.get("resourceId") for q in questions if q.get("answered")}
+        if questions:
+            pending = len(questions) - len(answered)
+            self._log("dim", f"     本节有 {len(questions)} 道课中题"
+                             + (f"（待答 {pending}）" if pending else "（都已答过）"))
+            self._answer_due_questions(course, questions, answered, play)
+
         rewound = False
         if play >= duration:
             # 续播已经在片尾。带 ff_1 的章节是「被跳满」的脏状态，要重开一条有效序列；
@@ -2259,6 +2379,8 @@ class Runner:
             now = time.time()
             play = min(float(duration), play + (now - last_tick) * self.options.speed)
             last_tick = now
+            if questions:
+                self._answer_due_questions(course, questions, answered, play)
             at_end = play >= duration
             bucket = min(9, int(play / duration * 10))
             if bucket != last_bucket and not at_end:
